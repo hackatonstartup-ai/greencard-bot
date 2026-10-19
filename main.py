@@ -1,7 +1,9 @@
 import asyncio
 import logging
+import os
 import sys
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.default import DefaultBotProperties
@@ -18,19 +20,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+async def handle_ping(request):
+    return web.Response(text="Green Card Telegram Bot is running on Render 24/7! 🇺🇸")
+
+async def start_web_server():
+    port = int(os.getenv("PORT", 8080))
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    app.router.add_get("/health", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"Health check web server muvaffaqiyatli ishga tushdi (port: {port})")
+
 async def main():
     if not BOT_TOKEN:
         logger.error("DIQQAT: .env faylida BOT_TOKEN ko'rsatilmagan! Iltimos, .env faylga bot tokenini kiriting.")
-        print("\n" + "="*60)
-        print("XATOLIK: BOT_TOKEN topilmadi!")
-        print("Iltimos, .env faylini oching va Telegram @BotFather dan olgan")
-        print("Bot Tokeningizni quyidagicha kiriting:")
-        print("BOT_TOKEN=123456789:ABCdefGhIJKlmNoPQRstuVWXyz")
-        print("="*60 + "\n")
         return
 
     logger.info("Ma'lumotlar bazasi ishga tushirilmoqda...")
     await init_db()
+
+    # Render uchun web serverni ishga tushirish (Health check port)
+    await start_web_server()
 
     bot = Bot(
         token=BOT_TOKEN,
