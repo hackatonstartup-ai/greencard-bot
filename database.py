@@ -93,6 +93,12 @@ async def init_db():
                 FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE
             )
         """)
+        # Check and migrate passport_photo_path if missing
+        async with db.execute("PRAGMA table_info(applications)") as cursor:
+            columns = [row[1] for row in await cursor.fetchall()]
+            if "passport_photo_path" not in columns:
+                await db.execute("ALTER TABLE applications ADD COLUMN passport_photo_path TEXT")
+        
         await db.commit()
 
 async def add_or_update_user(user_id: int, username: Optional[str], full_name: Optional[str], phone: Optional[str] = None):

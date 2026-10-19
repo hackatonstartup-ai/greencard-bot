@@ -824,6 +824,12 @@ async def process_confirm(message: Message, state: FSMContext, bot: Bot):
                     caption=admin_alert,
                     parse_mode="HTML"
                 )
+            else:
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text=admin_alert,
+                    parse_mode="HTML"
+                )
             if passport_photo_file and passport_photo_file.exists():
                 await bot.send_photo(
                     chat_id=admin_id,
