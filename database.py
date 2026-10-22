@@ -129,6 +129,34 @@ async def get_payment(payment_id: int) -> Optional[Dict[str, Any]]:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
+async def get_latest_pending_payment(user_id: int) -> Optional[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT * FROM payments
+            WHERE user_id = ? AND status = 'pending'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+async def resolve_payment(payment_id: int, user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    """Find payment by id; if DB was wiped (Render ephemeral disk), recover via user_id."""
+    payment = await get_payment(payment_id)
+    if payment:
+        return payment
+    if not user_id:
+        return None
+    pending = await get_latest_pending_payment(user_id)
+    if pending:
+        return pending
+    # Recreate a row so approve/reject can still proceed after a redeploy wipe
+    new_id = await create_payment(user_id=user_id, receipt_photo="recovered_after_redeploy")
+    return await get_payment(new_id)
+
 async def update_payment_status(payment_id: int, status: str) -> bool:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""

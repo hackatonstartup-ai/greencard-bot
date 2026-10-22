@@ -102,12 +102,18 @@ def get_admin_menu_kb() -> ReplyKeyboardMarkup:
         resize_keyboard=True
     )
 
-def get_payment_admin_kb(payment_id: int) -> InlineKeyboardMarkup:
+def get_payment_admin_kb(payment_id: int, user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="✅ To'lovni tasdiqlash", callback_data=f"pay_approve:{payment_id}"),
-                InlineKeyboardButton(text="❌ Rad etish", callback_data=f"pay_reject:{payment_id}")
+                InlineKeyboardButton(
+                    text="✅ To'lovni tasdiqlash",
+                    callback_data=f"pay_approve:{payment_id}:{user_id}",
+                ),
+                InlineKeyboardButton(
+                    text="❌ Rad etish",
+                    callback_data=f"pay_reject:{payment_id}:{user_id}",
+                ),
             ]
         ]
     )

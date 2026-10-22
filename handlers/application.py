@@ -12,7 +12,7 @@ from keyboards import (
     get_children_count_kb, get_confirm_kb, get_payment_admin_kb
 )
 from database import (
-    create_application, create_payment, get_payment,
+    create_application, create_payment, resolve_payment,
     update_payment_status, has_approved_payment
 )
 from utils.photo import validate_and_save_photo
@@ -122,25 +122,43 @@ async def process_payment_receipt(message: Message, state: FSMContext, bot: Bot)
                 chat_id=admin_id,
                 photo=FSInputFile(str(save_path)),
                 caption=admin_caption,
-                reply_markup=get_payment_admin_kb(payment_id),
+                reply_markup=get_payment_admin_kb(payment_id, user_id),
                 parse_mode="HTML"
             )
         except Exception as e:
             print(f"Failed to send receipt to admin {admin_id}: {e}")
 
 
+def _parse_payment_callback(data: str) -> tuple[int, int | None]:
+    """pay_approve:{payment_id} or pay_approve:{payment_id}:{user_id}"""
+    parts = data.split(":")
+    payment_id = int(parts[1])
+    user_id = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else None
+    return payment_id, user_id
+
+
+def _user_id_from_caption(caption: str | None) -> int | None:
+    if not caption:
+        return None
+    match = re.search(r"ID:\s*(\d+)", caption)
+    return int(match.group(1)) if match else None
+
+
 @router.callback_query(F.data.startswith("pay_approve:"))
 async def approve_payment_cb(callback: CallbackQuery, bot: Bot):
-    payment_id = int(callback.data.split(":")[1])
-    payment = await get_payment(payment_id)
-    
+    payment_id, user_id = _parse_payment_callback(callback.data)
+    if user_id is None:
+        user_id = _user_id_from_caption(callback.message.caption)
+
+    payment = await resolve_payment(payment_id, user_id)
+
     if not payment:
         await callback.answer("To'lov topilmadi!", show_alert=True)
         return
-        
-    await update_payment_status(payment_id, "approved")
+
+    await update_payment_status(payment["id"], "approved")
     target_user_id = payment["user_id"]
-    
+
     # Edit admin message
     await callback.message.edit_caption(
         caption=f"{callback.message.caption}\n\n✅ <b>To'lov tasdiqlandi!</b> (Admin: {callback.from_user.full_name})",
@@ -148,7 +166,7 @@ async def approve_payment_cb(callback: CallbackQuery, bot: Bot):
         parse_mode="HTML"
     )
     await callback.answer("To'lov tasdiqlandi!")
-    
+
     # Message to user
     try:
         user_msg = (
@@ -164,23 +182,26 @@ async def approve_payment_cb(callback: CallbackQuery, bot: Bot):
 
 @router.callback_query(F.data.startswith("pay_reject:"))
 async def reject_payment_cb(callback: CallbackQuery, bot: Bot):
-    payment_id = int(callback.data.split(":")[1])
-    payment = await get_payment(payment_id)
-    
+    payment_id, user_id = _parse_payment_callback(callback.data)
+    if user_id is None:
+        user_id = _user_id_from_caption(callback.message.caption)
+
+    payment = await resolve_payment(payment_id, user_id)
+
     if not payment:
         await callback.answer("To'lov topilmadi!", show_alert=True)
         return
-        
-    await update_payment_status(payment_id, "rejected")
+
+    await update_payment_status(payment["id"], "rejected")
     target_user_id = payment["user_id"]
-    
+
     await callback.message.edit_caption(
         caption=f"{callback.message.caption}\n\n❌ <b>To'lov rad etildi!</b> (Admin: {callback.from_user.full_name})",
         reply_markup=None,
         parse_mode="HTML"
     )
     await callback.answer("To'lov rad etildi!")
-    
+
     try:
         reject_msg = (
             "⚠️ <b>To'lov chekingiz tasdiqlanmadi.</b>\n\n"
