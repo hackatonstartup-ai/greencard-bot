@@ -8,6 +8,7 @@ from typing import Optional
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.base import StorageKey
 
 from states import PaymentStates, ApplicationStates, SpouseStates, ChildStates, ConfirmStates
 from keyboards import (
@@ -150,7 +151,7 @@ def _user_id_from_caption(caption: Optional[str]) -> Optional[int]:
 
 
 @router.callback_query(F.data.startswith("pay_approve:"))
-async def approve_payment_cb(callback: CallbackQuery, bot: Bot):
+async def approve_payment_cb(callback: CallbackQuery, bot: Bot, state: FSMContext):
     payment_id, user_id = _parse_payment_callback(callback.data)
     if user_id is None and callback.message:
         user_id = _user_id_from_caption(callback.message.caption)
@@ -178,6 +179,15 @@ async def approve_payment_cb(callback: CallbackQuery, bot: Bot):
             "Endi Green Card anketangizni to'ldirishni boshlaymiz.\n\n"
             "1-qadam: <b>Familiyangizni</b> kiriting (Pasportingizdagi lotin harflarida, masalan: <code>ALIEV</code>):"
         )
+        # Foydalanuvchining FSM holatini o'rnatamiz, toki familiya kiritganda qabul qilsin!
+        user_state = FSMContext(
+            storage=state.storage,
+            key=StorageKey(bot_id=bot.id, chat_id=target_user_id, user_id=target_user_id)
+        )
+        await user_state.clear()
+        await user_state.update_data(app_data={}, children=[])
+        await user_state.set_state(ApplicationStates.last_name)
+
         await bot.send_message(chat_id=target_user_id, text=user_msg, reply_markup=get_cancel_kb(), parse_mode="HTML")
     except Exception as e:
         print(f"Error messaging user {target_user_id}: {e}")
