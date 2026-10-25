@@ -4,54 +4,55 @@ class PaymentStates(StatesGroup):
     waiting_for_receipt = State()
 
 class ApplicationStates(StatesGroup):
-    # Passport Photo first
-    passport_photo = State()
-
-    # Primary Applicant (Part 1)
+    # SHAXSIY MA'LUMOTLAR (greencards.uz/form tartibida)
     last_name = State()
     first_name = State()
-    middle_name = State()
     gender = State()
     birth_date = State()
-    birth_city = State()
     birth_country = State()
+    birth_region = State()
+    birth_district = State()
+
+    # Pasport
+    passport_number = State()
+    passport_expiry = State()
+    passport_photo = State()
+
+    # RASM JOYLASHTIRISH
     photo = State()
-    
-    # Address & Contacts
-    address_line1 = State()
-    city = State()
-    district_state = State()
-    postal_code = State()
-    country = State()
+
+    # YASHASH MANZILI
     live_country = State()
-    phone_number = State()
+    live_region = State()
+    live_district = State()
+    address_line1 = State()
     email = State()
-    
-    # Eligibility & Status
+    phone_number = State()
+
+    # TA'LIM / OILA
     education_level = State()
     marital_status = State()
     children_count = State()
 
 class SpouseStates(StatesGroup):
-    # Spouse Details (Part 2)
     last_name = State()
     first_name = State()
-    middle_name = State()
-    birth_date = State()
     gender = State()
-    birth_city = State()
+    birth_date = State()
     birth_country = State()
+    birth_region = State()
+    birth_district = State()
+    education_level = State()
     photo = State()
 
 class ChildStates(StatesGroup):
-    # Child Details (Part 3)
     last_name = State()
     first_name = State()
-    middle_name = State()
-    birth_date = State()
     gender = State()
-    birth_city = State()
+    birth_date = State()
     birth_country = State()
+    birth_region = State()
+    birth_district = State()
     photo = State()
 
 class ConfirmStates(StatesGroup):

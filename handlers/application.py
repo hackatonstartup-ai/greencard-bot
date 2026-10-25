@@ -1,6 +1,10 @@
+from __future__ import annotations
+
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
+
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
@@ -8,13 +12,15 @@ from aiogram.fsm.context import FSMContext
 from states import PaymentStates, ApplicationStates, SpouseStates, ChildStates, ConfirmStates
 from keyboards import (
     get_main_menu_kb, get_cancel_kb, get_skip_kb, get_gender_kb,
-    get_country_kb, get_education_kb, get_marital_status_kb,
-    get_children_count_kb, get_confirm_kb, get_payment_admin_kb
+    get_country_kb, get_region_kb, get_district_kb, get_education_kb,
+    get_marital_status_kb, get_children_count_kb, get_confirm_kb,
+    get_payment_admin_kb
 )
 from database import (
     create_application, create_payment, resolve_payment,
     update_payment_status, has_approved_payment
 )
+from utils.locations import REGIONS, PHOTO_RULES
 from utils.photo import validate_and_save_photo
 from config import PHOTOS_DIR, ADMIN_IDS
 
@@ -36,6 +42,7 @@ PAYMENT_INSTRUCTIONS = (
     "<b>Tasdiqlash Raqami (Confirmation Number)</b> taqdim etiladi. Kutib qolaman! 🤝"
 )
 
+
 def is_valid_date(date_str: str) -> bool:
     try:
         parts = date_str.strip().replace("/", ".").replace("-", ".").split(".")
@@ -50,10 +57,12 @@ def is_valid_date(date_str: str) -> bool:
     except Exception:
         return False
 
+
 def format_date(date_str: str) -> str:
     parts = date_str.strip().replace("/", ".").replace("-", ".").split(".")
     day, month, year = int(parts[0]), int(parts[1]), int(parts[2])
     return f"{day:02d}.{month:02d}.{year:04d}"
+
 
 def is_valid_email(email: str) -> bool:
     pattern = r"^[\w\.-]+@[\w\.-]+\.\w+$"
@@ -67,13 +76,12 @@ def is_valid_email(email: str) -> bool:
 @router.message(F.text == "📝 Anketa to'ldirish")
 async def start_with_payment(message: Message, state: FSMContext):
     user_id = message.from_user.id
-    
-    # Check if user already paid and is approved
+
     already_paid = await has_approved_payment(user_id)
     if already_paid:
         await begin_questionnaire(message, state)
         return
-        
+
     await state.clear()
     await message.answer(PAYMENT_INSTRUCTIONS, reply_markup=get_cancel_kb(), parse_mode="HTML")
     await state.set_state(PaymentStates.waiting_for_receipt)
@@ -84,20 +92,19 @@ async def process_payment_receipt(message: Message, state: FSMContext, bot: Bot)
     user_id = message.from_user.id
     timestamp = int(datetime.now().timestamp())
     file_id = message.photo[-1].file_id if message.photo else message.document.file_id
-    
+
     file_info = await bot.get_file(file_id)
     file_bytes_io = await bot.download_file(file_info.file_path)
     file_bytes = file_bytes_io.read()
-    
+
     save_filename = f"{user_id}_{timestamp}_receipt.jpg"
     save_path = PHOTOS_DIR / save_filename
-    
+
     validate_and_save_photo(file_bytes, save_path)
-    
+
     payment_id = await create_payment(user_id=user_id, receipt_photo=save_filename)
     await state.clear()
-    
-    # Notify user
+
     await message.answer(
         "✅ <b>To'lov chekingiz adminga yuborildi!</b>\n\n"
         "Admin to'lovni tekshirib tasdiqlagach (odatda 5-10 daqiqa ichida), "
@@ -105,8 +112,7 @@ async def process_payment_receipt(message: Message, state: FSMContext, bot: Bot)
         reply_markup=get_main_menu_kb(),
         parse_mode="HTML"
     )
-    
-    # Notify admins with inline buttons
+
     admin_caption = (
         f"💳 <b>Yangi to'lov cheki keldi! (#{payment_id})</b>\n\n"
         f"👤 <b>Foydalanuvchi:</b> {message.from_user.full_name}\n"
@@ -115,7 +121,7 @@ async def process_payment_receipt(message: Message, state: FSMContext, bot: Bot)
         f"Summa: <b>50 000 so'm</b>\n\n"
         "To'lovni tasdiqlaysizmi?"
     )
-    
+
     for admin_id in ADMIN_IDS:
         try:
             await bot.send_photo(
@@ -129,15 +135,14 @@ async def process_payment_receipt(message: Message, state: FSMContext, bot: Bot)
             print(f"Failed to send receipt to admin {admin_id}: {e}")
 
 
-def _parse_payment_callback(data: str) -> tuple[int, int | None]:
-    """pay_approve:{payment_id} or pay_approve:{payment_id}:{user_id}"""
+def _parse_payment_callback(data: str) -> tuple[int, Optional[int]]:
     parts = data.split(":")
     payment_id = int(parts[1])
     user_id = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else None
     return payment_id, user_id
 
 
-def _user_id_from_caption(caption: str | None) -> int | None:
+def _user_id_from_caption(caption: Optional[str]) -> Optional[int]:
     if not caption:
         return None
     match = re.search(r"ID:\s*(\d+)", caption)
@@ -147,7 +152,7 @@ def _user_id_from_caption(caption: str | None) -> int | None:
 @router.callback_query(F.data.startswith("pay_approve:"))
 async def approve_payment_cb(callback: CallbackQuery, bot: Bot):
     payment_id, user_id = _parse_payment_callback(callback.data)
-    if user_id is None:
+    if user_id is None and callback.message:
         user_id = _user_id_from_caption(callback.message.caption)
 
     payment = await resolve_payment(payment_id, user_id)
@@ -159,21 +164,19 @@ async def approve_payment_cb(callback: CallbackQuery, bot: Bot):
     await update_payment_status(payment["id"], "approved")
     target_user_id = payment["user_id"]
 
-    # Edit admin message
-    await callback.message.edit_caption(
-        caption=f"{callback.message.caption}\n\n✅ <b>To'lov tasdiqlandi!</b> (Admin: {callback.from_user.full_name})",
-        reply_markup=None,
-        parse_mode="HTML"
-    )
+    if callback.message:
+        await callback.message.edit_caption(
+            caption=f"{callback.message.caption}\n\n✅ <b>To'lov tasdiqlandi!</b> (Admin: {callback.from_user.full_name})",
+            reply_markup=None,
+            parse_mode="HTML"
+        )
     await callback.answer("To'lov tasdiqlandi!")
 
-    # Message to user
     try:
         user_msg = (
             "🎉 <b>To'lovingiz muvaffaqiyatli tasdiqlandi!</b>\n\n"
             "Endi Green Card anketangizni to'ldirishni boshlaymiz.\n\n"
-            "1-qadam: <b>Pasportingiz rasmini</b> (Xorijga chiqish zagran pasporti yoki ID-karta) yuboring.\n"
-            "<i>(Ism-familiyangiz va ma'lumotlaringiz xatosiz kiritilishi uchun):</i>"
+            "1-qadam: <b>Familiyangizni</b> kiriting (Pasportingizdagi lotin harflarida, masalan: <code>ALIEV</code>):"
         )
         await bot.send_message(chat_id=target_user_id, text=user_msg, reply_markup=get_cancel_kb(), parse_mode="HTML")
     except Exception as e:
@@ -183,7 +186,7 @@ async def approve_payment_cb(callback: CallbackQuery, bot: Bot):
 @router.callback_query(F.data.startswith("pay_reject:"))
 async def reject_payment_cb(callback: CallbackQuery, bot: Bot):
     payment_id, user_id = _parse_payment_callback(callback.data)
-    if user_id is None:
+    if user_id is None and callback.message:
         user_id = _user_id_from_caption(callback.message.caption)
 
     payment = await resolve_payment(payment_id, user_id)
@@ -195,11 +198,12 @@ async def reject_payment_cb(callback: CallbackQuery, bot: Bot):
     await update_payment_status(payment["id"], "rejected")
     target_user_id = payment["user_id"]
 
-    await callback.message.edit_caption(
-        caption=f"{callback.message.caption}\n\n❌ <b>To'lov rad etildi!</b> (Admin: {callback.from_user.full_name})",
-        reply_markup=None,
-        parse_mode="HTML"
-    )
+    if callback.message:
+        await callback.message.edit_caption(
+            caption=f"{callback.message.caption}\n\n❌ <b>To'lov rad etildi!</b> (Admin: {callback.from_user.full_name})",
+            reply_markup=None,
+            parse_mode="HTML"
+        )
     await callback.answer("To'lov rad etildi!")
 
     try:
@@ -219,35 +223,10 @@ async def reject_payment_cb(callback: CallbackQuery, bot: Bot):
 async def begin_questionnaire(message: Message, state: FSMContext):
     await state.clear()
     await state.update_data(app_data={}, children=[])
-    
+
     text = (
         "🇺🇸 <b>Green Card anketasini to'ldirishni boshlaymiz!</b>\n\n"
-        "1-qadam: <b>Pasportingiz rasmini</b> (Xorijga chiqish zagran pasporti yoki ID-karta) yuboring.\n"
-        "<i>(Ism-familiyangiz 100% to'g'ri lotin yozuvida kiritilishi uchun kerak):</i>"
-    )
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.passport_photo)
-
-
-@router.message(ApplicationStates.passport_photo, F.photo | F.document)
-async def process_passport_photo(message: Message, state: FSMContext, bot: Bot):
-    user_id = message.from_user.id
-    timestamp = int(datetime.now().timestamp())
-    file_id = message.photo[-1].file_id if message.photo else message.document.file_id
-    
-    file_info = await bot.get_file(file_id)
-    file_bytes_io = await bot.download_file(file_info.file_path)
-    file_bytes = file_bytes_io.read()
-    
-    save_filename = f"{user_id}_{timestamp}_passport.jpg"
-    save_path = PHOTOS_DIR / save_filename
-    
-    validate_and_save_photo(file_bytes, save_path)
-    await state.update_data(passport_photo_path=save_filename)
-    
-    text = (
-        "✅ Pasport rasmi qabul qilindi!\n\n"
-        "2-qadam: <b>Familiyangizni</b> kiriting (Pasportingizdagi lotin harflarida, masalan: <code>ALIEV</code>):"
+        "1-qadam: <b>Familiyangizni</b> kiriting (Pasportingizdagi lotin harflarida, masalan: <code>ALIEV</code>):"
     )
     await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
     await state.set_state(ApplicationStates.last_name)
@@ -257,8 +236,8 @@ async def process_passport_photo(message: Message, state: FSMContext, bot: Bot):
 async def process_last_name(message: Message, state: FSMContext):
     last_name = message.text.strip().upper()
     await state.update_data(last_name=last_name)
-    
-    text = f"Familiya: <b>{last_name}</b>\n\n3-qadam: <b>Ismingizni</b> kiriting (Lotin harflarida, masalan: <code>VALI</code>):"
+
+    text = f"Familiya: <b>{last_name}</b>\n\n2-qadam: <b>Ismingizni</b> kiriting (Lotin harflarida, masalan: <code>VALI</code>):"
     await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
     await state.set_state(ApplicationStates.first_name)
 
@@ -267,33 +246,19 @@ async def process_last_name(message: Message, state: FSMContext):
 async def process_first_name(message: Message, state: FSMContext):
     first_name = message.text.strip().upper()
     await state.update_data(first_name=first_name)
-    
-    text = (
-        f"Ism: <b>{first_name}</b>\n\n"
-        "4-qadam: <b>Otasining ismi</b> (Middle Name) pasportingizda bo'lsa kiriting.\n"
-        "<i>(Agar pasportingizda Middle Name bo'lmasa, pastdagi 'O'tkazib yuborish' tugmasini bosing):</i>"
-    )
-    await message.answer(text, reply_markup=get_skip_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.middle_name)
 
-
-@router.message(ApplicationStates.middle_name, F.text)
-async def process_middle_name(message: Message, state: FSMContext):
-    middle_name = "" if "O'tkazib yuborish" in message.text else message.text.strip().upper()
-    await state.update_data(middle_name=middle_name)
-    
-    text = "5-qadam: <b>Jinsingizni</b> tanlang:"
+    text = f"Ism: <b>{first_name}</b>\n\n3-qadam: <b>Jinsingizni</b> tanlang:"
     await message.answer(text, reply_markup=get_gender_kb(), parse_mode="HTML")
     await state.set_state(ApplicationStates.gender)
 
 
-@router.message(ApplicationStates.gender, F.text.in_(["Erkak (Male)", "Ayol (Female)"]))
+@router.message(ApplicationStates.gender, F.text.in_(["Erkak", "Ayol", "Erkak (Male)", "Ayol (Female)"]))
 async def process_gender(message: Message, state: FSMContext):
     gender = "Male" if "Erkak" in message.text else "Female"
     await state.update_data(gender=gender)
-    
+
     text = (
-        "6-qadam: <b>Tug'ilgan sanangizni</b> kiriting.\n"
+        "4-qadam: <b>Tug'ilgan sanangizni</b> kiriting.\n"
         "Format: <code>kun.oy.yil</code> (Masalan: <code>15.05.1994</code>):"
     )
     await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
@@ -303,40 +268,112 @@ async def process_gender(message: Message, state: FSMContext):
 @router.message(ApplicationStates.birth_date, F.text)
 async def process_birth_date(message: Message, state: FSMContext):
     if not is_valid_date(message.text):
-        await message.answer("⚠️ Iltimos, sanani kun.oy.yil formatida to'g'ri kiriting (Masalan: <code>20.08.1995</code>):", parse_mode="HTML")
+        await message.answer(
+            "⚠️ Iltimos, sanani kun.oy.yil formatida to'g'ri kiriting (Masalan: <code>20.08.1995</code>):",
+            parse_mode="HTML"
+        )
         return
-        
+
     formatted = format_date(message.text)
     await state.update_data(birth_date=formatted)
-    
-    text = (
-        f"Tug'ilgan sana: <b>{formatted}</b>\n\n"
-        "7-qadam: <b>Tug'ilgan shahringiz yoki tumaningiz</b> nomini kiriting "
-        "(Faqat shahar/tuman nomi. Masalan: <code>Toshkent</code>, <code>Samarqand</code>, <code>Xiva</code>):"
-    )
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.birth_city)
 
-
-@router.message(ApplicationStates.birth_city, F.text)
-async def process_birth_city(message: Message, state: FSMContext):
-    birth_city = message.text.strip().title()
-    await state.update_data(birth_city=birth_city)
-    
-    text = "8-qadam: <b>Tug'ilgan davlatingizni</b> tanlang yoki yozing:"
+    text = f"Tug'ilgan sana: <b>{formatted}</b>\n\n5-qadam: <b>Tug'ilgan davlatingizni</b> tanlang:"
     await message.answer(text, reply_markup=get_country_kb(), parse_mode="HTML")
     await state.set_state(ApplicationStates.birth_country)
 
 
 @router.message(ApplicationStates.birth_country, F.text)
 async def process_birth_country(message: Message, state: FSMContext):
-    country = "Uzbekistan" if "O'zbekiston" in message.text else message.text.strip().title()
+    country = message.text.strip()
     await state.update_data(birth_country=country)
-    
+
+    if country in ("O'zbekiston", "Uzbekistan", "🇺🇿 O'zbekiston"):
+        text = "6-qadam: <b>Tug'ilgan viloyatingizni</b> tanlang:"
+        await message.answer(text, reply_markup=get_region_kb(), parse_mode="HTML")
+        await state.set_state(ApplicationStates.birth_region)
+    else:
+        text = "6-qadam: <b>Tug'ilgan shahar yoki viloyat nomini</b> kiriting:"
+        await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
+        await state.set_state(ApplicationStates.birth_district)
+
+
+@router.message(ApplicationStates.birth_region, F.text)
+async def process_birth_region(message: Message, state: FSMContext):
+    region = message.text.strip()
+    if region not in REGIONS:
+        await message.answer("Iltimos, tugmalardan viloyatni tanlang:")
+        return
+
+    await state.update_data(birth_region=region)
+    text = f"<b>{region}</b> tanlandi.\n\n7-qadam: <b>Tug'ilgan tuman yoki shahringizni</b> tanlang:"
+    await message.answer(text, reply_markup=get_district_kb(region), parse_mode="HTML")
+    await state.set_state(ApplicationStates.birth_district)
+
+
+@router.message(ApplicationStates.birth_district, F.text)
+async def process_birth_district(message: Message, state: FSMContext):
+    district = message.text.strip()
+    await state.update_data(birth_district=district, birth_city=district)
+
     text = (
-        "9-qadam: 📸 <b>O'zingizning Green Card fotosuratingizni yuboring.</b>\n\n"
-        "Talablar: Oq fonda, yorug' joyda, ko'zoynaksiz va yuz to'g'riga qaragan bo'lishi kerak.\n"
-        "<i>(O'lchamini o'zimiz moslab olamiz, siz shunchaki sifatli rasm yuborsangiz kifoya):</i>"
+        "8-qadam: <b>Pasport seriya va raqamingizni</b> kiriting (Masalan: <code>FA1234567</code> yoki <code>AA1234567</code>).\n"
+        "<i>(Agar pasport raqami bo'lmasa, 'O'tkazib yuborish' tugmasini bosing):</i>"
+    )
+    await message.answer(text, reply_markup=get_skip_kb(), parse_mode="HTML")
+    await state.set_state(ApplicationStates.passport_number)
+
+
+@router.message(ApplicationStates.passport_number, F.text)
+async def process_passport_number(message: Message, state: FSMContext):
+    val = "" if "O'tkazib yuborish" in message.text else message.text.strip().upper()
+    await state.update_data(passport_number=val)
+
+    text = (
+        "9-qadam: <b>Pasportingizning amal qilish muddati</b> (kun.oy.yil, masalan: <code>15.05.2030</code>).\n"
+        "<i>(Yoki 'O'tkazib yuborish' tugmasini bosing):</i>"
+    )
+    await message.answer(text, reply_markup=get_skip_kb(), parse_mode="HTML")
+    await state.set_state(ApplicationStates.passport_expiry)
+
+
+@router.message(ApplicationStates.passport_expiry, F.text)
+async def process_passport_expiry(message: Message, state: FSMContext):
+    val = "" if "O'tkazib yuborish" in message.text else message.text.strip()
+    await state.update_data(passport_expiry=val)
+
+    text = (
+        "10-qadam: <b>Pasportingiz rasmini</b> yuboring (Zagran pasport yoki ID-karta asosiy beti).\n"
+        "<i>(Yoki 'O'tkazib yuborish' tugmasini bosing):</i>"
+    )
+    await message.answer(text, reply_markup=get_skip_kb(), parse_mode="HTML")
+    await state.set_state(ApplicationStates.passport_photo)
+
+
+@router.message(ApplicationStates.passport_photo, F.photo | F.document | F.text)
+async def process_passport_photo(message: Message, state: FSMContext, bot: Bot):
+    if message.text and "O'tkazib yuborish" in message.text:
+        await state.update_data(passport_photo_path="")
+    elif message.photo or message.document:
+        user_id = message.from_user.id
+        timestamp = int(datetime.now().timestamp())
+        file_id = message.photo[-1].file_id if message.photo else message.document.file_id
+
+        file_info = await bot.get_file(file_id)
+        file_bytes_io = await bot.download_file(file_info.file_path)
+        file_bytes = file_bytes_io.read()
+
+        save_filename = f"{user_id}_{timestamp}_passport.jpg"
+        save_path = PHOTOS_DIR / save_filename
+
+        validate_and_save_photo(file_bytes, save_path)
+        await state.update_data(passport_photo_path=save_filename)
+    else:
+        await message.answer("Iltimos, rasm yuboring yoki 'O'tkazib yuborish' tugmasini bosing:")
+        return
+
+    text = (
+        f"{PHOTO_RULES}\n\n"
+        "11-qadam: 📸 <b>Green Card fotosuratingizni yuboring:</b>"
     )
     await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
     await state.set_state(ApplicationStates.photo)
@@ -347,20 +384,57 @@ async def process_photo(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     timestamp = int(datetime.now().timestamp())
     file_id = message.photo[-1].file_id if message.photo else message.document.file_id
-    
+
     file_info = await bot.get_file(file_id)
     file_bytes_io = await bot.download_file(file_info.file_path)
     file_bytes = file_bytes_io.read()
-    
+
     save_filename = f"{user_id}_{timestamp}_main.jpg"
     save_path = PHOTOS_DIR / save_filename
-    
+
     validate_and_save_photo(file_bytes, save_path)
     await state.update_data(photo_path=save_filename)
-    
+
+    text = "✅ Rasm qabul qilindi!\n\n12-qadam: <b>Hozirda yashayotgan davlatingizni tanlang:</b>"
+    await message.answer(text, reply_markup=get_country_kb(), parse_mode="HTML")
+    await state.set_state(ApplicationStates.live_country)
+
+
+@router.message(ApplicationStates.live_country, F.text)
+async def process_live_country(message: Message, state: FSMContext):
+    country = message.text.strip()
+    await state.update_data(live_country=country, country=country)
+
+    if country in ("O'zbekiston", "Uzbekistan", "🇺🇿 O'zbekiston"):
+        text = "13-qadam: <b>Hozirda yashayotgan viloyatingizni tanlang:</b>"
+        await message.answer(text, reply_markup=get_region_kb(), parse_mode="HTML")
+        await state.set_state(ApplicationStates.live_region)
+    else:
+        text = "13-qadam: <b>Hozirda yashayotgan shahar/viloyatingiz nomini kiriting:</b>"
+        await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
+        await state.set_state(ApplicationStates.live_district)
+
+
+@router.message(ApplicationStates.live_region, F.text)
+async def process_live_region(message: Message, state: FSMContext):
+    region = message.text.strip()
+    if region not in REGIONS:
+        await message.answer("Iltimos, tugmalardan viloyatni tanlang:")
+        return
+
+    await state.update_data(live_region=region, district_state=region)
+    text = f"<b>{region}</b> tanlandi.\n\n14-qadam: <b>Hozirda yashayotgan tumaningizni tanlang:</b>"
+    await message.answer(text, reply_markup=get_district_kb(region), parse_mode="HTML")
+    await state.set_state(ApplicationStates.live_district)
+
+
+@router.message(ApplicationStates.live_district, F.text)
+async def process_live_district(message: Message, state: FSMContext):
+    district = message.text.strip()
+    await state.update_data(live_district=district, city=district)
+
     text = (
-        "✅ Rasm qabul qilindi!\n\n"
-        "10-qadam: <b>Yashash manzilingizni kiriting</b> (Ko'cha, uy raqami, xonadon):\n"
+        "15-qadam: <b>Yashash manzilingizni kiriting</b> (Ko'cha, uy raqami, xonadon):\n"
         "Masalan: <code>Amir Temur ko'chasi, 45-uy</code>"
     )
     await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
@@ -371,52 +445,29 @@ async def process_photo(message: Message, state: FSMContext, bot: Bot):
 async def process_address(message: Message, state: FSMContext):
     address = message.text.strip()
     await state.update_data(address_line1=address)
-    
-    text = "11-qadam: <b>Shahar yoki tuman</b> nomini kiriting (Masalan: <code>Toshkent</code>):"
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.city)
 
-
-@router.message(ApplicationStates.city, F.text)
-async def process_city(message: Message, state: FSMContext):
-    city = message.text.strip()
-    await state.update_data(city=city)
-    
-    text = "12-qadam: <b>Viloyat</b> nomini kiriting (Masalan: <code>Samarqand viloyati</code>):"
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.district_state)
-
-
-@router.message(ApplicationStates.district_state, F.text)
-async def process_district_state(message: Message, state: FSMContext):
-    district = message.text.strip()
-    await state.update_data(district_state=district)
-    
     text = (
-        "13-qadam: <b>Pochta indeksi</b> (Masalan: <code>100000</code>).\n"
-        "Agar bilmasangiz, 'O'tkazib yuborish' tugmasini bosing:"
+        "16-qadam: <b>Elektron pochta (Email) manzilingizni kiriting:</b>\n"
+        "<i>(Yoki 'O'tkazib yuborish' tugmasini bosing):</i>"
     )
     await message.answer(text, reply_markup=get_skip_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.postal_code)
+    await state.set_state(ApplicationStates.email)
 
 
-@router.message(ApplicationStates.postal_code, F.text)
-async def process_postal_code(message: Message, state: FSMContext):
-    postal = "" if "O'tkazib yuborish" in message.text else message.text.strip()
-    await state.update_data(postal_code=postal)
-    
-    text = "14-qadam: <b>Hozirda yashayotgan davlatingiz:</b>"
-    await message.answer(text, reply_markup=get_country_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.live_country)
+@router.message(ApplicationStates.email, F.text)
+async def process_email(message: Message, state: FSMContext):
+    if "O'tkazib yuborish" in message.text:
+        email = ""
+    else:
+        email = message.text.strip().lower()
+        if not is_valid_email(email):
+            await message.answer("⚠️ Noto'g'ri email formati! Iltimos, to'g'ri email kiriting yoki 'O'tkazib yuborish' bosing:", parse_mode="HTML")
+            return
 
+    await state.update_data(email=email)
 
-@router.message(ApplicationStates.live_country, F.text)
-async def process_live_country(message: Message, state: FSMContext):
-    country = "Uzbekistan" if "O'zbekiston" in message.text else message.text.strip()
-    await state.update_data(country=country, live_country=country)
-    
     text = (
-        "15-qadam: <b>Telefon raqamingizni kiriting:</b>\n"
+        "17-qadam: <b>Telefon raqamingizni kiriting:</b>\n"
         "Masalan: <code>+998901234567</code>"
     )
     await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
@@ -427,25 +478,8 @@ async def process_live_country(message: Message, state: FSMContext):
 async def process_phone_number(message: Message, state: FSMContext):
     phone = message.text.strip()
     await state.update_data(phone_number=phone)
-    
-    text = (
-        "16-qadam: <b>Elektron pochta (Email) manzilingizni kiriting:</b>\n"
-        "<i>(Masalan: <code>name@gmail.com</code>):</i>"
-    )
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.email)
 
-
-@router.message(ApplicationStates.email, F.text)
-async def process_email(message: Message, state: FSMContext):
-    email = message.text.strip().lower()
-    if not is_valid_email(email):
-        await message.answer("⚠️ Noto'g'ri email formati! Iltimos, to'g'ri email kiriting (Masalan: <code>name@gmail.com</code>):", parse_mode="HTML")
-        return
-        
-    await state.update_data(email=email)
-    
-    text = "17-qadam: <b>Ma'lumotingiz (Ta'lim darajangizni tanlang):</b>"
+    text = "18-qadam: <b>Ma'lumotingiz (Ta'lim darajangizni tanlang):</b>"
     await message.answer(text, reply_markup=get_education_kb(), parse_mode="HTML")
     await state.set_state(ApplicationStates.education_level)
 
@@ -453,8 +487,8 @@ async def process_email(message: Message, state: FSMContext):
 @router.message(ApplicationStates.education_level, F.text)
 async def process_education_level(message: Message, state: FSMContext):
     await state.update_data(education_level=message.text.strip())
-    
-    text = "18-qadam: <b>Oilaviy holatingizni tanlang:</b>"
+
+    text = "19-qadam: <b>Oilaviy holatingizni tanlang:</b>"
     await message.answer(text, reply_markup=get_marital_status_kb(), parse_mode="HTML")
     await state.set_state(ApplicationStates.marital_status)
 
@@ -463,8 +497,8 @@ async def process_education_level(message: Message, state: FSMContext):
 async def process_marital_status(message: Message, state: FSMContext):
     status_text = message.text.strip()
     await state.update_data(marital_status=status_text)
-    
-    if "Turmush qurgan" in status_text:
+
+    if "Uylangan" in status_text or "Turmush qurgan" in status_text or "turmushga chiqgan" in status_text:
         text = (
             "💍 <b>Turmush o'rtog'ingiz ma'lumotlari:</b>\n\n"
             "Turmush o'rtog'ingizning <b>Familiyasini</b> kiriting (Lotin harflarida, masalan: <code>ALIEVA</code>):"
@@ -489,7 +523,7 @@ async def process_marital_status(message: Message, state: FSMContext):
 async def process_spouse_last_name(message: Message, state: FSMContext):
     last_name = message.text.strip().upper()
     await state.update_data(spouse_last_name=last_name)
-    
+
     text = "Turmush o'rtog'ingizning <b>Ismini</b> kiriting (Lotin harflarida, masalan: <code>NIGORA</code>):"
     await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
     await state.set_state(SpouseStates.first_name)
@@ -499,20 +533,17 @@ async def process_spouse_last_name(message: Message, state: FSMContext):
 async def process_spouse_first_name(message: Message, state: FSMContext):
     first_name = message.text.strip().upper()
     await state.update_data(spouse_first_name=first_name)
-    
-    text = (
-        "Turmush o'rtog'ingizning <b>Otasining ismi</b> bo'lsa kiriting\n"
-        "(Bo'lmasa, 'O'tkazib yuborish' tugmasini bosing):"
-    )
-    await message.answer(text, reply_markup=get_skip_kb(), parse_mode="HTML")
-    await state.set_state(SpouseStates.middle_name)
+
+    text = "Turmush o'rtog'ingizning <b>Jinsini</b> tanlang:"
+    await message.answer(text, reply_markup=get_gender_kb(), parse_mode="HTML")
+    await state.set_state(SpouseStates.gender)
 
 
-@router.message(SpouseStates.middle_name, F.text)
-async def process_spouse_middle_name(message: Message, state: FSMContext):
-    middle_name = "" if "O'tkazib yuborish" in message.text else message.text.strip().upper()
-    await state.update_data(spouse_middle_name=middle_name)
-    
+@router.message(SpouseStates.gender, F.text.in_(["Erkak", "Ayol", "Erkak (Male)", "Ayol (Female)"]))
+async def process_spouse_gender(message: Message, state: FSMContext):
+    gender = "Male" if "Erkak" in message.text else "Female"
+    await state.update_data(spouse_gender=gender)
+
     text = (
         "Turmush o'rtog'ingizning <b>Tug'ilgan sanasini</b> kiriting.\n"
         "Format: <code>kun.oy.yil</code> (Masalan: <code>10.12.1996</code>):"
@@ -526,41 +557,58 @@ async def process_spouse_birth_date(message: Message, state: FSMContext):
     if not is_valid_date(message.text):
         await message.answer("⚠️ Iltimos, sanani kun.oy.yil formatida to'g'ri kiriting (Masalan: <code>12.06.1996</code>):", parse_mode="HTML")
         return
-        
+
     formatted = format_date(message.text)
     await state.update_data(spouse_birth_date=formatted)
-    
-    text = "Turmush o'rtog'ingizning <b>Jinsini</b> tanlang:"
-    await message.answer(text, reply_markup=get_gender_kb(), parse_mode="HTML")
-    await state.set_state(SpouseStates.gender)
 
-
-@router.message(SpouseStates.gender, F.text.in_(["Erkak (Male)", "Ayol (Female)"]))
-async def process_spouse_gender(message: Message, state: FSMContext):
-    gender = "Male" if "Erkak" in message.text else "Female"
-    await state.update_data(spouse_gender=gender)
-    
-    text = "Turmush o'rtog'ingiz <b>Tug'ilgan shahar yoki tumanni</b> kiriting (Masalan: <code>Buxoro</code>):"
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(SpouseStates.birth_city)
-
-
-@router.message(SpouseStates.birth_city, F.text)
-async def process_spouse_birth_city(message: Message, state: FSMContext):
-    city = message.text.strip().title()
-    await state.update_data(spouse_birth_city=city)
-    
-    text = "Turmush o'rtog'ingiz <b>Tug'ilgan davlati:</b>"
+    text = "Turmush o'rtog'ingiz <b>Tug'ilgan davlatini</b> tanlang:"
     await message.answer(text, reply_markup=get_country_kb(), parse_mode="HTML")
     await state.set_state(SpouseStates.birth_country)
 
 
 @router.message(SpouseStates.birth_country, F.text)
 async def process_spouse_birth_country(message: Message, state: FSMContext):
-    country = "Uzbekistan" if "O'zbekiston" in message.text else message.text.strip().title()
+    country = message.text.strip()
     await state.update_data(spouse_birth_country=country)
-    
-    text = "📸 <b>Turmush o'rtog'ingizning fotosuratini yuboring:</b>"
+
+    if country in ("O'zbekiston", "Uzbekistan", "🇺🇿 O'zbekiston"):
+        text = "Turmush o'rtog'ingiz <b>Tug'ilgan viloyatini</b> tanlang:"
+        await message.answer(text, reply_markup=get_region_kb(), parse_mode="HTML")
+        await state.set_state(SpouseStates.birth_region)
+    else:
+        text = "Turmush o'rtog'ingiz <b>Tug'ilgan shahar/tuman nomini</b> kiriting:"
+        await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
+        await state.set_state(SpouseStates.birth_district)
+
+
+@router.message(SpouseStates.birth_region, F.text)
+async def process_spouse_birth_region(message: Message, state: FSMContext):
+    region = message.text.strip()
+    if region not in REGIONS:
+        await message.answer("Iltimos, tugmalardan viloyatni tanlang:")
+        return
+
+    await state.update_data(spouse_birth_region=region)
+    text = f"<b>{region}</b> tanlandi.\n\nTurmush o'rtog'ingiz <b>Tug'ilgan tuman yoki shahri:</b>"
+    await message.answer(text, reply_markup=get_district_kb(region), parse_mode="HTML")
+    await state.set_state(SpouseStates.birth_district)
+
+
+@router.message(SpouseStates.birth_district, F.text)
+async def process_spouse_birth_district(message: Message, state: FSMContext):
+    district = message.text.strip()
+    await state.update_data(spouse_birth_district=district, spouse_birth_city=district)
+
+    text = "Turmush o'rtog'ingizning <b>Ma'lumot darajasini</b> tanlang:"
+    await message.answer(text, reply_markup=get_education_kb(), parse_mode="HTML")
+    await state.set_state(SpouseStates.education_level)
+
+
+@router.message(SpouseStates.education_level, F.text)
+async def process_spouse_education(message: Message, state: FSMContext):
+    await state.update_data(spouse_education_level=message.text.strip())
+
+    text = "📸 <b>Turmush o'rtog'ingizning Green Card fotosuratini yuboring:</b>"
     await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
     await state.set_state(SpouseStates.photo)
 
@@ -570,29 +618,31 @@ async def process_spouse_photo(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     timestamp = int(datetime.now().timestamp())
     file_id = message.photo[-1].file_id if message.photo else message.document.file_id
-    
+
     file_info = await bot.get_file(file_id)
     file_bytes_io = await bot.download_file(file_info.file_path)
     file_bytes = file_bytes_io.read()
-    
+
     save_filename = f"{user_id}_{timestamp}_spouse.jpg"
     save_path = PHOTOS_DIR / save_filename
-    
+
     validate_and_save_photo(file_bytes, save_path)
 
     data = await state.get_data()
     spouse_data = {
         "last_name": data.get("spouse_last_name"),
         "first_name": data.get("spouse_first_name"),
-        "middle_name": data.get("spouse_middle_name"),
+        "middle_name": "",
         "birth_date": data.get("spouse_birth_date"),
         "gender": data.get("spouse_gender"),
-        "birth_city": data.get("spouse_birth_city"),
+        "birth_region": data.get("spouse_birth_region", ""),
+        "birth_city": data.get("spouse_birth_city", ""),
         "birth_country": data.get("spouse_birth_country"),
+        "education_level": data.get("spouse_education_level", ""),
         "photo_path": save_filename
     }
     await state.update_data(spouse=spouse_data)
-    
+
     text = (
         "✅ Turmush o'rtog'ingiz surati qabul qilindi!\n\n"
         "👶 <b>Farzandlar:</b>\n"
@@ -619,9 +669,9 @@ async def process_children_count(message: Message, state: FSMContext):
     else:
         await message.answer("Iltimos, pastdagi tugmalardan birini tanlang:")
         return
-        
+
     await state.update_data(children_count=count, total_children=count, current_child_index=1, children=[])
-    
+
     if count == 0:
         await show_confirmation(message, state)
     else:
@@ -641,7 +691,7 @@ async def ask_child_info(message: Message, state: FSMContext, child_num: int):
 async def process_child_last_name(message: Message, state: FSMContext):
     last_name = message.text.strip().upper()
     await state.update_data(current_child_last_name=last_name)
-    
+
     text = "Farzandingizning <b>Ismini</b> kiriting (Lotin harflarida, masalan: <code>BEHZOD</code>):"
     await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
     await state.set_state(ChildStates.first_name)
@@ -651,20 +701,17 @@ async def process_child_last_name(message: Message, state: FSMContext):
 async def process_child_first_name(message: Message, state: FSMContext):
     first_name = message.text.strip().upper()
     await state.update_data(current_child_first_name=first_name)
-    
-    text = (
-        "Farzandingizning <b>Otasining ismi</b> bo'lsa kiriting\n"
-        "(Bo'lmasa, 'O'tkazib yuborish' tugmasini bosing):"
-    )
-    await message.answer(text, reply_markup=get_skip_kb(), parse_mode="HTML")
-    await state.set_state(ChildStates.middle_name)
+
+    text = "Farzandingizning <b>Jinsini</b> tanlang:"
+    await message.answer(text, reply_markup=get_gender_kb(), parse_mode="HTML")
+    await state.set_state(ChildStates.gender)
 
 
-@router.message(ChildStates.middle_name, F.text)
-async def process_child_middle_name(message: Message, state: FSMContext):
-    middle_name = "" if "O'tkazib yuborish" in message.text else message.text.strip().upper()
-    await state.update_data(current_child_middle_name=middle_name)
-    
+@router.message(ChildStates.gender, F.text.in_(["Erkak", "Ayol", "Erkak (Male)", "Ayol (Female)"]))
+async def process_child_gender(message: Message, state: FSMContext):
+    gender = "Male" if "Erkak" in message.text else "Female"
+    await state.update_data(current_child_gender=gender)
+
     text = (
         "Farzandingizning <b>Tug'ilgan sanasini</b> kiriting.\n"
         "Format: <code>kun.oy.yil</code> (Masalan: <code>01.06.2018</code>):"
@@ -678,41 +725,49 @@ async def process_child_birth_date(message: Message, state: FSMContext):
     if not is_valid_date(message.text):
         await message.answer("⚠️ Iltimos, sanani kun.oy.yil formatida to'g'ri kiriting (Masalan: <code>15.03.2015</code>):", parse_mode="HTML")
         return
-        
+
     formatted = format_date(message.text)
     await state.update_data(current_child_birth_date=formatted)
-    
-    text = "Farzandingizning <b>Jinsini</b> tanlang:"
-    await message.answer(text, reply_markup=get_gender_kb(), parse_mode="HTML")
-    await state.set_state(ChildStates.gender)
 
-
-@router.message(ChildStates.gender, F.text.in_(["Erkak (Male)", "Ayol (Female)"]))
-async def process_child_gender(message: Message, state: FSMContext):
-    gender = "Male" if "Erkak" in message.text else "Female"
-    await state.update_data(current_child_gender=gender)
-    
-    text = "Farzandingiz <b>Tug'ilgan shahar yoki tumanni</b> kiriting (Masalan: <code>Toshkent</code>):"
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(ChildStates.birth_city)
-
-
-@router.message(ChildStates.birth_city, F.text)
-async def process_child_birth_city(message: Message, state: FSMContext):
-    city = message.text.strip().title()
-    await state.update_data(current_child_birth_city=city)
-    
-    text = "Farzandingiz <b>Tug'ilgan davlati:</b>"
+    text = "Farzandingiz <b>Tug'ilgan davlatini</b> tanlang:"
     await message.answer(text, reply_markup=get_country_kb(), parse_mode="HTML")
     await state.set_state(ChildStates.birth_country)
 
 
 @router.message(ChildStates.birth_country, F.text)
 async def process_child_birth_country(message: Message, state: FSMContext):
-    country = "Uzbekistan" if "O'zbekiston" in message.text else message.text.strip().title()
+    country = message.text.strip()
     await state.update_data(current_child_birth_country=country)
-    
-    text = "📸 <b>Farzandingizning fotosuratini yuboring:</b>"
+
+    if country in ("O'zbekiston", "Uzbekistan", "🇺🇿 O'zbekiston"):
+        text = "Farzandingiz <b>Tug'ilgan viloyatini</b> tanlang:"
+        await message.answer(text, reply_markup=get_region_kb(), parse_mode="HTML")
+        await state.set_state(ChildStates.birth_region)
+    else:
+        text = "Farzandingiz <b>Tug'ilgan shahar/tuman nomini</b> kiriting:"
+        await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
+        await state.set_state(ChildStates.birth_district)
+
+
+@router.message(ChildStates.birth_region, F.text)
+async def process_child_birth_region(message: Message, state: FSMContext):
+    region = message.text.strip()
+    if region not in REGIONS:
+        await message.answer("Iltimos, tugmalardan viloyatni tanlang:")
+        return
+
+    await state.update_data(current_child_birth_region=region)
+    text = f"<b>{region}</b> tanlandi.\n\nFarzandingiz <b>Tug'ilgan tuman yoki shahri:</b>"
+    await message.answer(text, reply_markup=get_district_kb(region), parse_mode="HTML")
+    await state.set_state(ChildStates.birth_district)
+
+
+@router.message(ChildStates.birth_district, F.text)
+async def process_child_birth_district(message: Message, state: FSMContext):
+    district = message.text.strip()
+    await state.update_data(current_child_birth_district=district, current_child_birth_city=district)
+
+    text = "📸 <b>Farzandingizning Green Card fotosuratini yuboring:</b>"
     await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
     await state.set_state(ChildStates.photo)
 
@@ -722,35 +777,36 @@ async def process_child_photo(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     timestamp = int(datetime.now().timestamp())
     file_id = message.photo[-1].file_id if message.photo else message.document.file_id
-    
+
     file_info = await bot.get_file(file_id)
     file_bytes_io = await bot.download_file(file_info.file_path)
     file_bytes = file_bytes_io.read()
-    
+
     data = await state.get_data()
     curr_idx = data.get("current_child_index", 1)
-    
+
     save_filename = f"{user_id}_{timestamp}_child_{curr_idx}.jpg"
     save_path = PHOTOS_DIR / save_filename
-    
+
     validate_and_save_photo(file_bytes, save_path)
 
     child_data = {
         "child_index": curr_idx,
         "last_name": data.get("current_child_last_name"),
         "first_name": data.get("current_child_first_name"),
-        "middle_name": data.get("current_child_middle_name"),
+        "middle_name": "",
         "birth_date": data.get("current_child_birth_date"),
         "gender": data.get("current_child_gender"),
-        "birth_city": data.get("current_child_birth_city"),
+        "birth_region": data.get("current_child_birth_region", ""),
+        "birth_city": data.get("current_child_birth_city", ""),
         "birth_country": data.get("current_child_birth_country"),
         "photo_path": save_filename
     }
-    
+
     children = data.get("children", [])
     children.append(child_data)
     await state.update_data(children=children)
-    
+
     total = data.get("total_children", 1)
     if curr_idx < total:
         next_idx = curr_idx + 1
@@ -766,41 +822,48 @@ async def process_child_photo(message: Message, state: FSMContext, bot: Bot):
 
 async def show_confirmation(message: Message, state: FSMContext):
     data = await state.get_data()
-    
+
+    birth_place = f"{data.get('birth_region', '')} {data.get('birth_district', '')}".strip()
+    live_place = f"{data.get('live_region', '')} {data.get('live_district', '')} {data.get('address_line1', '')}".strip()
+
     summary = (
-        "📋 <b>ANIKETA MA'LUMOTLARI TEKSHIRUVI</b>\n\n"
+        "📋 <b>ANKETA MA'LUMOTLARI TEKSHIRUVI</b>\n\n"
         "👤 <b>Asosiy arizachi:</b>\n"
-        f"• F.I.O: {data.get('last_name')} {data.get('first_name')} {data.get('middle_name', '')}\n"
+        f"• F.I: {data.get('last_name')} {data.get('first_name')}\n"
         f"• Jinsi: {data.get('gender')}\n"
         f"• Tug'ilgan sana: {data.get('birth_date')}\n"
-        f"• Tug'ilgan joyi: {data.get('birth_city')}, {data.get('birth_country')}\n"
-        f"• Yashash manzili: {data.get('address_line1')}, {data.get('city')}, {data.get('district_state')}\n"
-        f"• Tel / Email: {data.get('phone_number')} | {data.get('email')}\n"
+        f"• Tug'ilgan joyi: {birth_place}, {data.get('birth_country')}\n"
+        f"• Pasport seriya: {data.get('passport_number') or 'Kiritilmagan'}\n"
+        f"• Yashash manzili: {live_place}, {data.get('live_country')}\n"
+        f"• Tel / Email: {data.get('phone_number')} | {data.get('email') or 'Kiritilmagan'}\n"
         f"• Ta'lim: {data.get('education_level')}\n"
         f"• Oilaviy holati: {data.get('marital_status')}\n"
         f"• Farzandlar soni: {data.get('children_count', 0)}\n"
     )
-    
+
     spouse = data.get("spouse")
     if spouse:
+        sp_birth = f"{spouse.get('birth_region', '')} {spouse.get('birth_city', '')}".strip()
         summary += (
             f"\n💍 <b>Turmush o'rtog'i:</b>\n"
-            f"• F.I.O: {spouse.get('last_name')} {spouse.get('first_name')} {spouse.get('middle_name', '')}\n"
+            f"• F.I: {spouse.get('last_name')} {spouse.get('first_name')}\n"
             f"• Tug'ilgan sana: {spouse.get('birth_date')}\n"
-            f"• Tug'ilgan joyi: {spouse.get('birth_city')}, {spouse.get('birth_country')}\n"
+            f"• Tug'ilgan joyi: {sp_birth}, {spouse.get('birth_country')}\n"
+            f"• Ta'lim darajasi: {spouse.get('education_level', '')}\n"
         )
-        
+
     children = data.get("children", [])
     if children:
         summary += "\n👶 <b>Farzandlar:</b>\n"
         for ch in children:
+            ch_birth = f"{ch.get('birth_region', '')} {ch.get('birth_city', '')}".strip()
             summary += (
                 f"• #{ch.get('child_index')}: {ch.get('last_name')} {ch.get('first_name')} | "
-                f"{ch.get('birth_date')} | {ch.get('birth_city')}\n"
+                f"{ch.get('birth_date')} | {ch_birth}\n"
             )
 
     summary += "\n⚠️ <b>Barcha ma'lumotlar to'g'ri kiritilganligiga ishonch hosil qiling!</b>"
-    
+
     await message.answer(summary, reply_markup=get_confirm_kb(), parse_mode="HTML")
     await state.set_state(ConfirmStates.confirm)
 
@@ -809,10 +872,10 @@ async def show_confirmation(message: Message, state: FSMContext):
 async def process_confirm(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     user_id = message.from_user.id
-    
+
     app_id = await create_application(user_id=user_id, app_data=data)
     await state.clear()
-    
+
     success_text = (
         f"🎉 <b>Arizangiz muvaffaqiyatli qabul qilindi!</b>\n\n"
         f"Sizning anketa raqamingiz: <b>#{app_id}</b>\n\n"
@@ -821,18 +884,24 @@ async def process_confirm(message: Message, state: FSMContext, bot: Bot):
         "Xizmatingizdan mamnunmiz! Omad tilaymiz! 🇺🇸"
     )
     await message.answer(success_text, reply_markup=get_main_menu_kb(), parse_mode="HTML")
-    
+
+    birth_place = f"{data.get('birth_region', '')} {data.get('birth_district', '')}".strip()
+    passport_val = data.get('passport_number') or "Yo'q"
+    email_val = data.get('email') or "Yo'q"
     admin_alert = (
         f"🆕 <b>Yangi anketa kelib tushdi! #ID: {app_id}</b>\n\n"
         f"👤 <b>Arizachi:</b> {data.get('last_name')} {data.get('first_name')}\n"
+        f"📅 <b>Tug'ilgan:</b> {data.get('birth_date')} ({birth_place})\n"
+        f"🛂 <b>Pasport:</b> {passport_val}\n"
         f"📞 <b>Tel:</b> {data.get('phone_number')}\n"
-        f"📧 <b>Email:</b> {data.get('email')}\n"
+        f"📧 <b>Email:</b> {email_val}\n"
+        f"🎓 <b>Ta'lim:</b> {data.get('education_level')}\n"
         f"💍 <b>Oila:</b> {data.get('marital_status')}\n"
         f"👶 <b>Farzandlar:</b> {data.get('children_count', 0)} ta\n"
         f"Telegram: @{message.from_user.username or 'yo_q'} (ID: {user_id})\n\n"
         "<i>Barcha anketalarni Excel formatda yuklab olish uchun /admin buyrug'idan foydalaning.</i>"
     )
-    
+
     main_photo_file = PHOTOS_DIR / data.get("photo_path") if data.get("photo_path") else None
     passport_photo_file = PHOTOS_DIR / data.get("passport_photo_path") if data.get("passport_photo_path") else None
 
@@ -855,7 +924,7 @@ async def process_confirm(message: Message, state: FSMContext, bot: Bot):
                 await bot.send_photo(
                     chat_id=admin_id,
                     photo=FSInputFile(str(passport_photo_file)),
-                    caption=f"🛂 #{app_id}-anketa uchun PASPORT rasmi ({data.get('last_name')} {data.get('first_name')})",
+                    caption=f"🛂 #{app_id}-anketa uchun PASPORT ({data.get('last_name')} {data.get('first_name')})",
                     parse_mode="HTML"
                 )
         except Exception as e:

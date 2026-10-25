@@ -1,6 +1,6 @@
 import io
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageOps
 from typing import Tuple
 
 def validate_and_save_photo(file_bytes: bytes, save_path: Path) -> Tuple[bool, str]:
@@ -13,8 +13,8 @@ def validate_and_save_photo(file_bytes: bytes, save_path: Path) -> Tuple[bool, s
     """
     try:
         img = Image.open(io.BytesIO(file_bytes))
+        img = ImageOps.exif_transpose(img)
         
-        # Convert RGBA/P to RGB if needed
         if img.mode in ("RGBA", "P"):
             img = img.convert("RGB")
             
@@ -24,3 +24,33 @@ def validate_and_save_photo(file_bytes: bytes, save_path: Path) -> Tuple[bool, s
         return True, "Rasm muvaffaqiyatli qabul qilindi!"
     except Exception as e:
         return False, f"Rasm faylida xatolik yuz berdi: {str(e)}"
+
+MAX_PHOTO_BYTES = 240 * 1024
+PHOTO_SIZE = 600
+
+def process_dv_photo(file_bytes: bytes, save_path: Path) -> Tuple[bool, str]:
+    """
+    Green Card fotosurati (sayt talabi bo'yicha):
+    - kamida 600x600 px, kvadrat (markazdan qirqiladi) va 600x600 ga keltiriladi
+    - hajmi 240 KB dan oshmaydi (sifat pasaytirib boriladi)
+    """
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+        img = ImageOps.exif_transpose(img)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+
+        w, h = img.size
+        side = min(w, h)
+        left, top = (w - side) // 2, (h - side) // 2
+        img = img.crop((left, top, left + side, top + side)).resize(
+            (PHOTO_SIZE, PHOTO_SIZE), Image.Resampling.LANCZOS
+        )
+
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=90, optimize=True)
+        save_path.write_bytes(buf.getvalue())
+        return True, "OK"
+    except Exception as e:
+        return False, f"Rasm faylida xatolik: {e}"

@@ -93,12 +93,29 @@ async def init_db():
                 FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE
             )
         """)
-        # Check and migrate passport_photo_path if missing
+        # Migrate new columns for greencards.uz-compatible form
         async with db.execute("PRAGMA table_info(applications)") as cursor:
-            columns = [row[1] for row in await cursor.fetchall()]
-            if "passport_photo_path" not in columns:
-                await db.execute("ALTER TABLE applications ADD COLUMN passport_photo_path TEXT")
-        
+            app_cols = {row[1] for row in await cursor.fetchall()}
+        for col, typ in [
+            ("passport_photo_path", "TEXT"),
+            ("passport_number", "TEXT"),
+            ("passport_expiry", "TEXT"),
+            ("birth_region", "TEXT"),
+        ]:
+            if col not in app_cols:
+                await db.execute(f"ALTER TABLE applications ADD COLUMN {col} {typ}")
+
+        async with db.execute("PRAGMA table_info(spouses)") as cursor:
+            spouse_cols = {row[1] for row in await cursor.fetchall()}
+        for col, typ in [("birth_region", "TEXT"), ("education_level", "TEXT")]:
+            if col not in spouse_cols:
+                await db.execute(f"ALTER TABLE spouses ADD COLUMN {col} {typ}")
+
+        async with db.execute("PRAGMA table_info(children)") as cursor:
+            child_cols = {row[1] for row in await cursor.fetchall()}
+        if "birth_region" not in child_cols:
+            await db.execute("ALTER TABLE children ADD COLUMN birth_region TEXT")
+
         await db.commit()
 
 async def add_or_update_user(user_id: int, username: Optional[str], full_name: Optional[str], phone: Optional[str] = None):
@@ -176,74 +193,80 @@ async def create_application(user_id: int, app_data: Dict[str, Any]) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute("""
             INSERT INTO applications (
-                user_id, passport_photo_path, last_name, first_name, middle_name,
-                gender, birth_date, birth_city, birth_country, photo_path,
+                user_id, passport_photo_path, passport_number, passport_expiry,
+                last_name, first_name, middle_name,
+                gender, birth_date, birth_region, birth_city, birth_country, photo_path,
                 address_line1, address_line2, city, district_state,
                 postal_code, country, live_country, phone_number,
                 email, education_level, marital_status, children_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             user_id,
             app_data.get("passport_photo_path"),
+            app_data.get("passport_number"),
+            app_data.get("passport_expiry"),
             app_data.get("last_name"),
             app_data.get("first_name"),
-            app_data.get("middle_name"),
+            app_data.get("middle_name") or "",
             app_data.get("gender"),
             app_data.get("birth_date"),
-            app_data.get("birth_city"),
+            app_data.get("birth_region"),
+            app_data.get("birth_city"),  # tuman/shahar
             app_data.get("birth_country"),
             app_data.get("photo_path"),
             app_data.get("address_line1"),
-            app_data.get("address_line2"),
-            app_data.get("city"),
-            app_data.get("district_state"),
-            app_data.get("postal_code"),
-            app_data.get("country"),
+            app_data.get("address_line2") or "",
+            app_data.get("city"),  # yashash tumani
+            app_data.get("district_state"),  # yashash viloyati
+            app_data.get("postal_code") or "",
+            app_data.get("country") or app_data.get("live_country"),
             app_data.get("live_country"),
             app_data.get("phone_number"),
-            app_data.get("email"),
+            app_data.get("email") or "",
             app_data.get("education_level"),
             app_data.get("marital_status"),
             app_data.get("children_count", 0)
         ))
         app_id = cursor.lastrowid
 
-        # Insert spouse if present
         spouse = app_data.get("spouse")
         if spouse:
             await db.execute("""
                 INSERT INTO spouses (
                     application_id, last_name, first_name, middle_name,
-                    birth_date, gender, birth_city, birth_country, photo_path
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    birth_date, gender, birth_region, birth_city, birth_country,
+                    education_level, photo_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 app_id,
                 spouse.get("last_name"),
                 spouse.get("first_name"),
-                spouse.get("middle_name"),
+                spouse.get("middle_name") or "",
                 spouse.get("birth_date"),
                 spouse.get("gender"),
+                spouse.get("birth_region"),
                 spouse.get("birth_city"),
                 spouse.get("birth_country"),
+                spouse.get("education_level"),
                 spouse.get("photo_path")
             ))
 
-        # Insert children if present
         children = app_data.get("children", [])
         for idx, child in enumerate(children, start=1):
             await db.execute("""
                 INSERT INTO children (
                     application_id, child_index, last_name, first_name, middle_name,
-                    birth_date, gender, birth_city, birth_country, photo_path
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    birth_date, gender, birth_region, birth_city, birth_country, photo_path
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 app_id,
                 idx,
                 child.get("last_name"),
                 child.get("first_name"),
-                child.get("middle_name"),
+                child.get("middle_name") or "",
                 child.get("birth_date"),
                 child.get("gender"),
+                child.get("birth_region"),
                 child.get("birth_city"),
                 child.get("birth_country"),
                 child.get("photo_path")
