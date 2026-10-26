@@ -2,6 +2,23 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 from utils.locations import COUNTRIES, REGIONS, EDUCATION_LEVELS, MARITAL_STATUSES
 
 
+BACK_TEXT = "⬅️ Orqaga"
+RESTART_TEXT = "🔁 Boshidan boshlash"
+CANCEL_TEXT = "❌ Bekor qilish"
+
+
+def _nav_rows() -> list[list[KeyboardButton]]:
+    """Anketa davomida har doim ko'rinadigan navigatsiya tugmalari."""
+    return [
+        [KeyboardButton(text=BACK_TEXT), KeyboardButton(text=RESTART_TEXT)],
+        [KeyboardButton(text=CANCEL_TEXT)],
+    ]
+
+
+def get_nav_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(keyboard=_nav_rows(), resize_keyboard=True)
+
+
 def _chunk_rows(items: list[str], per_row: int = 1) -> list[list[KeyboardButton]]:
     rows = []
     for i in range(0, len(items), per_row):
@@ -28,54 +45,48 @@ def get_cancel_kb() -> ReplyKeyboardMarkup:
 
 def get_skip_kb(text: str = "➡️ O'tkazib yuborish") -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=text)],
-            [KeyboardButton(text="❌ Bekor qilish")]
-        ],
+        keyboard=[[KeyboardButton(text=text)]] + _nav_rows(),
         resize_keyboard=True
     )
 
 
 def get_gender_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Erkak"), KeyboardButton(text="Ayol")],
-            [KeyboardButton(text="❌ Bekor qilish")]
-        ],
+        keyboard=[[KeyboardButton(text="Erkak"), KeyboardButton(text="Ayol")]] + _nav_rows(),
         resize_keyboard=True
     )
 
 
 def get_country_kb() -> ReplyKeyboardMarkup:
     rows = _chunk_rows(COUNTRIES, per_row=2)
-    rows.append([KeyboardButton(text="❌ Bekor qilish")])
+    rows.extend(_nav_rows())
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
 def get_region_kb() -> ReplyKeyboardMarkup:
     rows = [[KeyboardButton(text=r)] for r in REGIONS.keys()]
-    rows.append([KeyboardButton(text="❌ Bekor qilish")])
+    rows.extend(_nav_rows())
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
 def get_district_kb(region: str) -> ReplyKeyboardMarkup:
     districts = REGIONS.get(region, [])
     if not districts:
-        return get_cancel_kb()
+        return get_nav_kb()
     rows = [[KeyboardButton(text=d)] for d in districts]
-    rows.append([KeyboardButton(text="❌ Bekor qilish")])
+    rows.extend(_nav_rows())
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
 def get_education_kb() -> ReplyKeyboardMarkup:
     rows = [[KeyboardButton(text=e)] for e in EDUCATION_LEVELS]
-    rows.append([KeyboardButton(text="❌ Bekor qilish")])
+    rows.extend(_nav_rows())
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
 def get_marital_status_kb() -> ReplyKeyboardMarkup:
     rows = [[KeyboardButton(text=m)] for m in MARITAL_STATUSES]
-    rows.append([KeyboardButton(text="❌ Bekor qilish")])
+    rows.extend(_nav_rows())
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
@@ -84,7 +95,8 @@ def get_children_count_kb() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="0 (Farzand yo'q)")],
             [KeyboardButton(text="1"), KeyboardButton(text="2"), KeyboardButton(text="3")],
-            [KeyboardButton(text="4"), KeyboardButton(text="5"), KeyboardButton(text="6+")]
+            [KeyboardButton(text="4"), KeyboardButton(text="5"), KeyboardButton(text="6+")],
+            *_nav_rows(),
         ],
         resize_keyboard=True
     )
@@ -94,8 +106,7 @@ def get_confirm_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="✅ Ma'lumotlarni tasdiqlash va yuborish")],
-            [KeyboardButton(text="🔄 Qaytadan to'ldirish")],
-            [KeyboardButton(text="❌ Bekor qilish")]
+            *_nav_rows(),
         ],
         resize_keyboard=True
     )
