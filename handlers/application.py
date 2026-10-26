@@ -7,6 +7,7 @@ from typing import Optional
 
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile
+from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 
@@ -15,7 +16,7 @@ from keyboards import (
     get_main_menu_kb, get_cancel_kb, get_skip_kb, get_gender_kb,
     get_country_kb, get_region_kb, get_district_kb, get_education_kb,
     get_marital_status_kb, get_children_count_kb, get_confirm_kb,
-    get_payment_admin_kb
+    get_payment_admin_kb, get_nav_kb, BACK_TEXT, RESTART_TEXT
 )
 from database import (
     create_application, create_payment, resolve_payment,
@@ -71,6 +72,124 @@ def is_valid_email(email: str) -> bool:
 
 
 # ==========================================
+# 0. NAVIGATSIYA: ORQAGA / BOSHIDAN BOSHLASH
+# ==========================================
+
+QUESTIONNAIRE_STATES = StateFilter(ApplicationStates, SpouseStates, ChildStates, ConfirmStates)
+
+STATE_BY_NAME = {
+    st.state: st
+    for group in (ApplicationStates, SpouseStates, ChildStates, ConfirmStates)
+    for st in group.__all_states__
+}
+
+UZ_NAMES = ("O'zbekiston", "Uzbekistan", "🇺🇿 O'zbekiston")
+
+
+async def goto(state: FSMContext, new_state) -> None:
+    """Keyingi bosqichga o'tadi va joriy bosqichni 'orqaga' tarixiga yozib qo'yadi."""
+    current = await state.get_state()
+    data = await state.get_data()
+    history = list(data.get("history", []))
+    if current and current in STATE_BY_NAME:
+        history.append(current)
+    await state.update_data(history=history)
+    await state.set_state(new_state)
+
+
+async def ask_state(message: Message, state: FSMContext, st) -> None:
+    """Berilgan bosqich savolini qayta beradi (orqaga qaytganda ishlatiladi)."""
+    d = await state.get_data()
+    n = get_nav_kb
+    A, S, C = ApplicationStates, SpouseStates, ChildStates
+    child_no = d.get("current_child_index", 1)
+
+    def district_kb(country_key, region_key):
+        if d.get(country_key) in UZ_NAMES:
+            return get_district_kb(d.get(region_key, ""))
+        return n()
+
+    prompts = {
+        A.last_name: ("Familiyangizni qayta kiriting (Lotin harflarida, masalan: <code>ALIEV</code>):", n()),
+        A.first_name: ("Ismingizni qayta kiriting (Lotin harflarida, masalan: <code>VALI</code>):", n()),
+        A.gender: ("Jinsingizni tanlang:", get_gender_kb()),
+        A.birth_date: ("Tug'ilgan sanangizni kiriting (<code>kun.oy.yil</code>, masalan: <code>15.05.1994</code>):", n()),
+        A.birth_country: ("Tug'ilgan davlatingizni tanlang:", get_country_kb()),
+        A.birth_region: ("Tug'ilgan viloyatingizni tanlang:", get_region_kb()),
+        A.birth_district: ("Tug'ilgan tuman/shahringizni kiriting yoki tanlang:", district_kb("birth_country", "birth_region")),
+        A.passport_photo: ("🛂 Zagran pasportingiz rasmini qayta yuboring:", n()),
+        A.photo: (f"{PHOTO_RULES}\n\n📸 Green Card fotosuratingizni qayta yuboring:", n()),
+        A.live_country: ("Hozirda yashayotgan davlatingizni tanlang:", get_country_kb()),
+        A.live_region: ("Hozirda yashayotgan viloyatingizni tanlang:", get_region_kb()),
+        A.live_district: ("Hozirda yashayotgan tuman/shahringizni kiriting yoki tanlang:", district_kb("live_country", "live_region")),
+        A.address_line1: ("Yashash manzilingizni kiriting (Ko'cha, uy raqami, xonadon):", n()),
+        A.email: ("Email manzilingizni kiriting (yoki 'O'tkazib yuborish' ni bosing):", get_skip_kb()),
+        A.phone_number: ("Telefon raqamingizni kiriting (masalan: <code>+998901234567</code>):", n()),
+        A.education_level: ("Ta'lim darajangizni tanlang:", get_education_kb()),
+        A.marital_status: ("Oilaviy holatingizni tanlang:", get_marital_status_kb()),
+        A.children_count: ("21 yoshga to'lmagan, turmush qurmagan nechta farzandingiz bor?", get_children_count_kb()),
+        S.last_name: ("Turmush o'rtog'ingizning familiyasini kiriting:", n()),
+        S.first_name: ("Turmush o'rtog'ingizning ismini kiriting:", n()),
+        S.gender: ("Turmush o'rtog'ingizning jinsini tanlang:", get_gender_kb()),
+        S.birth_date: ("Turmush o'rtog'ingizning tug'ilgan sanasini kiriting (<code>kun.oy.yil</code>):", n()),
+        S.birth_country: ("Turmush o'rtog'ingiz tug'ilgan davlatni tanlang:", get_country_kb()),
+        S.birth_region: ("Turmush o'rtog'ingiz tug'ilgan viloyatni tanlang:", get_region_kb()),
+        S.birth_district: ("Turmush o'rtog'ingiz tug'ilgan tuman/shahrni kiriting yoki tanlang:", district_kb("spouse_birth_country", "spouse_birth_region")),
+        S.education_level: ("Turmush o'rtog'ingizning ma'lumot darajasini tanlang:", get_education_kb()),
+        S.photo: ("📸 Turmush o'rtog'ingizning fotosuratini qayta yuboring:", n()),
+        C.last_name: (f"👶 {child_no}-farzandning familiyasini kiriting:", n()),
+        C.first_name: (f"{child_no}-farzandning ismini kiriting:", n()),
+        C.gender: (f"{child_no}-farzandning jinsini tanlang:", get_gender_kb()),
+        C.birth_date: (f"{child_no}-farzandning tug'ilgan sanasini kiriting (<code>kun.oy.yil</code>):", n()),
+        C.birth_country: (f"{child_no}-farzand tug'ilgan davlatni tanlang:", get_country_kb()),
+        C.birth_region: (f"{child_no}-farzand tug'ilgan viloyatni tanlang:", get_region_kb()),
+        C.birth_district: (f"{child_no}-farzand tug'ilgan tuman/shahrni kiriting yoki tanlang:", district_kb("current_child_birth_country", "current_child_birth_region")),
+        C.photo: (f"📸 {child_no}-farzandning fotosuratini qayta yuboring:", n()),
+    }
+
+    if st == ConfirmStates.confirm:
+        await show_confirmation(message, state)
+        return
+    text, kb = prompts[st]
+    await message.answer(f"⬅️ <b>Orqaga qaytdingiz.</b>\n\n{text}", reply_markup=kb, parse_mode="HTML")
+
+
+@router.message(F.text == BACK_TEXT, QUESTIONNAIRE_STATES)
+async def go_back(message: Message, state: FSMContext):
+    data = await state.get_data()
+    history = list(data.get("history", []))
+    if not history:
+        await message.answer(
+            "Bu birinchi qadam, orqaga qaytib bo'lmaydi.\n"
+            "Boshidan boshlash uchun «" + RESTART_TEXT + "» tugmasini bosing.",
+            reply_markup=get_nav_kb()
+        )
+        return
+
+    prev = STATE_BY_NAME[history.pop()]
+    updates = {"history": history}
+
+    # Farzand fotosiga qaytilsa — oxirgi saqlangan farzandni olib tashlaymiz,
+    # foto qayta yuborilganda u yangidan yoziladi.
+    if prev == ChildStates.photo:
+        children = list(data.get("children", []))
+        if children:
+            last = children.pop()
+            updates["children"] = children
+            updates["current_child_index"] = last.get("child_index", len(children) + 1)
+
+    await state.update_data(**updates)
+    await state.set_state(prev)
+    await ask_state(message, state, prev)
+
+
+@router.message(F.text == RESTART_TEXT, QUESTIONNAIRE_STATES)
+async def restart_questionnaire(message: Message, state: FSMContext):
+    await message.answer("🔁 Anketa boshidan boshlandi. Avvalgi kiritilgan ma'lumotlar o'chirildi.")
+    await begin_questionnaire(message, state)
+
+
+# ==========================================
 # 1. TO'LOV JARAYONI (PAYMENT FIRST)
 # ==========================================
 
@@ -85,7 +204,7 @@ async def start_with_payment(message: Message, state: FSMContext):
 
     await state.clear()
     await message.answer(PAYMENT_INSTRUCTIONS, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(PaymentStates.waiting_for_receipt)
+    await goto(state, PaymentStates.waiting_for_receipt)
 
 
 @router.message(PaymentStates.waiting_for_receipt, F.photo | F.document)
@@ -188,7 +307,7 @@ async def approve_payment_cb(callback: CallbackQuery, bot: Bot, state: FSMContex
         await user_state.update_data(app_data={}, children=[])
         await user_state.set_state(ApplicationStates.last_name)
 
-        await bot.send_message(chat_id=target_user_id, text=user_msg, reply_markup=get_cancel_kb(), parse_mode="HTML")
+        await bot.send_message(chat_id=target_user_id, text=user_msg, reply_markup=get_nav_kb(), parse_mode="HTML")
     except Exception as e:
         print(f"Error messaging user {target_user_id}: {e}")
 
@@ -232,14 +351,14 @@ async def reject_payment_cb(callback: CallbackQuery, bot: Bot):
 
 async def begin_questionnaire(message: Message, state: FSMContext):
     await state.clear()
-    await state.update_data(app_data={}, children=[])
+    await state.update_data(app_data={}, children=[], history=[])
 
     text = (
         "🇺🇸 <b>Green Card anketasini to'ldirishni boshlaymiz!</b>\n\n"
         "1-qadam: <b>Familiyangizni</b> kiriting (Pasportingizdagi lotin harflarida, masalan: <code>ALIEV</code>):"
     )
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.last_name)
+    await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+    await goto(state, ApplicationStates.last_name)
 
 
 @router.message(ApplicationStates.last_name, F.text)
@@ -248,8 +367,8 @@ async def process_last_name(message: Message, state: FSMContext):
     await state.update_data(last_name=last_name)
 
     text = f"Familiya: <b>{last_name}</b>\n\n2-qadam: <b>Ismingizni</b> kiriting (Lotin harflarida, masalan: <code>VALI</code>):"
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.first_name)
+    await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+    await goto(state, ApplicationStates.first_name)
 
 
 @router.message(ApplicationStates.first_name, F.text)
@@ -259,7 +378,7 @@ async def process_first_name(message: Message, state: FSMContext):
 
     text = f"Ism: <b>{first_name}</b>\n\n3-qadam: <b>Jinsingizni</b> tanlang:"
     await message.answer(text, reply_markup=get_gender_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.gender)
+    await goto(state, ApplicationStates.gender)
 
 
 @router.message(ApplicationStates.gender, F.text.in_(["Erkak", "Ayol", "Erkak (Male)", "Ayol (Female)"]))
@@ -271,8 +390,8 @@ async def process_gender(message: Message, state: FSMContext):
         "4-qadam: <b>Tug'ilgan sanangizni</b> kiriting.\n"
         "Format: <code>kun.oy.yil</code> (Masalan: <code>15.05.1994</code>):"
     )
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.birth_date)
+    await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+    await goto(state, ApplicationStates.birth_date)
 
 
 @router.message(ApplicationStates.birth_date, F.text)
@@ -289,22 +408,22 @@ async def process_birth_date(message: Message, state: FSMContext):
 
     text = f"Tug'ilgan sana: <b>{formatted}</b>\n\n5-qadam: <b>Tug'ilgan davlatingizni</b> tanlang:"
     await message.answer(text, reply_markup=get_country_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.birth_country)
+    await goto(state, ApplicationStates.birth_country)
 
 
 @router.message(ApplicationStates.birth_country, F.text)
 async def process_birth_country(message: Message, state: FSMContext):
     country = message.text.strip()
-    await state.update_data(birth_country=country)
+    await state.update_data(birth_country=country, birth_region="")
 
     if country in ("O'zbekiston", "Uzbekistan", "🇺🇿 O'zbekiston"):
         text = "6-qadam: <b>Tug'ilgan viloyatingizni</b> tanlang:"
         await message.answer(text, reply_markup=get_region_kb(), parse_mode="HTML")
-        await state.set_state(ApplicationStates.birth_region)
+        await goto(state, ApplicationStates.birth_region)
     else:
         text = "6-qadam: <b>Tug'ilgan shahar yoki viloyat nomini</b> kiriting:"
-        await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-        await state.set_state(ApplicationStates.birth_district)
+        await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+        await goto(state, ApplicationStates.birth_district)
 
 
 @router.message(ApplicationStates.birth_region, F.text)
@@ -317,7 +436,7 @@ async def process_birth_region(message: Message, state: FSMContext):
     await state.update_data(birth_region=region)
     text = f"<b>{region}</b> tanlandi.\n\n7-qadam: <b>Tug'ilgan tuman yoki shahringizni</b> tanlang:"
     await message.answer(text, reply_markup=get_district_kb(region), parse_mode="HTML")
-    await state.set_state(ApplicationStates.birth_district)
+    await goto(state, ApplicationStates.birth_district)
 
 
 @router.message(ApplicationStates.birth_district, F.text)
@@ -334,8 +453,8 @@ async def process_birth_district(message: Message, state: FSMContext):
         "8-qadam: 🛂 <b>Xorijga chiqish (Zagran) pasportingiz rasmini yuboring:</b>\n\n"
         "<i>(Asosiy ma'lumotlar sahifasi to'liq, yorug' va aniq ko'rinsin. Ushbu qadam majburiy!)</i>"
     )
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.passport_photo)
+    await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+    await goto(state, ApplicationStates.passport_photo)
 
 
 @router.message(ApplicationStates.passport_photo, F.photo | F.document)
@@ -358,8 +477,8 @@ async def process_passport_photo(message: Message, state: FSMContext, bot: Bot):
         f"{PHOTO_RULES}\n\n"
         "9-qadam: 📸 <b>Green Card fotosuratingizni yuboring:</b>"
     )
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.photo)
+    await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+    await goto(state, ApplicationStates.photo)
 
 
 @router.message(ApplicationStates.passport_photo)
@@ -367,7 +486,7 @@ async def invalid_passport_photo(message: Message):
     await message.answer(
         "⚠️ <b>Iltimos, xorijga chiqish (zagran) pasportingiz rasmini rasm yoki fayl ko'rinishida yuboring:</b>\n"
         "<i>(Ushbu qadam majburiy)</i>",
-        reply_markup=get_cancel_kb(),
+        reply_markup=get_nav_kb(),
         parse_mode="HTML"
     )
 
@@ -390,22 +509,22 @@ async def process_photo(message: Message, state: FSMContext, bot: Bot):
 
     text = "✅ Rasm qabul qilindi!\n\n10-qadam: <b>Hozirda yashayotgan davlatingizni tanlang:</b>"
     await message.answer(text, reply_markup=get_country_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.live_country)
+    await goto(state, ApplicationStates.live_country)
 
 
 @router.message(ApplicationStates.live_country, F.text)
 async def process_live_country(message: Message, state: FSMContext):
     country = message.text.strip()
-    await state.update_data(live_country=country, country=country)
+    await state.update_data(live_country=country, country=country, live_region="", district_state="")
 
     if country in ("O'zbekiston", "Uzbekistan", "🇺🇿 O'zbekiston"):
         text = "11-qadam: <b>Hozirda yashayotgan viloyatingizni tanlang:</b>"
         await message.answer(text, reply_markup=get_region_kb(), parse_mode="HTML")
-        await state.set_state(ApplicationStates.live_region)
+        await goto(state, ApplicationStates.live_region)
     else:
         text = "11-qadam: <b>Hozirda yashayotgan shahar/viloyatingiz nomini kiriting:</b>"
-        await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-        await state.set_state(ApplicationStates.live_district)
+        await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+        await goto(state, ApplicationStates.live_district)
 
 
 @router.message(ApplicationStates.live_region, F.text)
@@ -418,7 +537,7 @@ async def process_live_region(message: Message, state: FSMContext):
     await state.update_data(live_region=region, district_state=region)
     text = f"<b>{region}</b> tanlandi.\n\n12-qadam: <b>Hozirda yashayotgan tumaningizni tanlang:</b>"
     await message.answer(text, reply_markup=get_district_kb(region), parse_mode="HTML")
-    await state.set_state(ApplicationStates.live_district)
+    await goto(state, ApplicationStates.live_district)
 
 
 @router.message(ApplicationStates.live_district, F.text)
@@ -430,8 +549,8 @@ async def process_live_district(message: Message, state: FSMContext):
         "13-qadam: <b>Yashash manzilingizni kiriting</b> (Ko'cha, uy raqami, xonadon):\n"
         "Masalan: <code>Amir Temur ko'chasi, 45-uy</code>"
     )
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.address_line1)
+    await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+    await goto(state, ApplicationStates.address_line1)
 
 
 @router.message(ApplicationStates.address_line1, F.text)
@@ -444,7 +563,7 @@ async def process_address(message: Message, state: FSMContext):
         "<i>(Yoki 'O'tkazib yuborish' tugmasini bosing):</i>"
     )
     await message.answer(text, reply_markup=get_skip_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.email)
+    await goto(state, ApplicationStates.email)
 
 
 @router.message(ApplicationStates.email, F.text)
@@ -463,8 +582,8 @@ async def process_email(message: Message, state: FSMContext):
         "15-qadam: <b>Telefon raqamingizni kiriting:</b>\n"
         "Masalan: <code>+998901234567</code>"
     )
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.phone_number)
+    await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+    await goto(state, ApplicationStates.phone_number)
 
 
 @router.message(ApplicationStates.phone_number, F.text)
@@ -474,7 +593,7 @@ async def process_phone_number(message: Message, state: FSMContext):
 
     text = "16-qadam: <b>Ma'lumotingiz (Ta'lim darajangizni tanlang):</b>"
     await message.answer(text, reply_markup=get_education_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.education_level)
+    await goto(state, ApplicationStates.education_level)
 
 
 @router.message(ApplicationStates.education_level, F.text)
@@ -483,21 +602,21 @@ async def process_education_level(message: Message, state: FSMContext):
 
     text = "17-qadam: <b>Oilaviy holatingizni tanlang:</b>"
     await message.answer(text, reply_markup=get_marital_status_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.marital_status)
+    await goto(state, ApplicationStates.marital_status)
 
 
 @router.message(ApplicationStates.marital_status, F.text)
 async def process_marital_status(message: Message, state: FSMContext):
     status_text = message.text.strip()
-    await state.update_data(marital_status=status_text)
+    await state.update_data(marital_status=status_text, spouse=None)
 
     if "Uylangan" in status_text or "Turmush qurgan" in status_text or "turmushga chiqgan" in status_text:
         text = (
             "💍 <b>Turmush o'rtog'ingiz ma'lumotlari:</b>\n\n"
             "Turmush o'rtog'ingizning <b>Familiyasini</b> kiriting (Lotin harflarida, masalan: <code>ALIEVA</code>):"
         )
-        await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-        await state.set_state(SpouseStates.last_name)
+        await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+        await goto(state, SpouseStates.last_name)
     else:
         text = (
             "👶 <b>Farzandlar:</b>\n\n"
@@ -505,7 +624,7 @@ async def process_marital_status(message: Message, state: FSMContext):
             "<i>(Agar farzandingiz bo'lmasa, '0' tugmasini bosing):</i>"
         )
         await message.answer(text, reply_markup=get_children_count_kb(), parse_mode="HTML")
-        await state.set_state(ApplicationStates.children_count)
+        await goto(state, ApplicationStates.children_count)
 
 
 # ==========================================
@@ -518,8 +637,8 @@ async def process_spouse_last_name(message: Message, state: FSMContext):
     await state.update_data(spouse_last_name=last_name)
 
     text = "Turmush o'rtog'ingizning <b>Ismini</b> kiriting (Lotin harflarida, masalan: <code>NIGORA</code>):"
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(SpouseStates.first_name)
+    await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+    await goto(state, SpouseStates.first_name)
 
 
 @router.message(SpouseStates.first_name, F.text)
@@ -529,7 +648,7 @@ async def process_spouse_first_name(message: Message, state: FSMContext):
 
     text = "Turmush o'rtog'ingizning <b>Jinsini</b> tanlang:"
     await message.answer(text, reply_markup=get_gender_kb(), parse_mode="HTML")
-    await state.set_state(SpouseStates.gender)
+    await goto(state, SpouseStates.gender)
 
 
 @router.message(SpouseStates.gender, F.text.in_(["Erkak", "Ayol", "Erkak (Male)", "Ayol (Female)"]))
@@ -541,8 +660,8 @@ async def process_spouse_gender(message: Message, state: FSMContext):
         "Turmush o'rtog'ingizning <b>Tug'ilgan sanasini</b> kiriting.\n"
         "Format: <code>kun.oy.yil</code> (Masalan: <code>10.12.1996</code>):"
     )
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(SpouseStates.birth_date)
+    await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+    await goto(state, SpouseStates.birth_date)
 
 
 @router.message(SpouseStates.birth_date, F.text)
@@ -556,22 +675,22 @@ async def process_spouse_birth_date(message: Message, state: FSMContext):
 
     text = "Turmush o'rtog'ingiz <b>Tug'ilgan davlatini</b> tanlang:"
     await message.answer(text, reply_markup=get_country_kb(), parse_mode="HTML")
-    await state.set_state(SpouseStates.birth_country)
+    await goto(state, SpouseStates.birth_country)
 
 
 @router.message(SpouseStates.birth_country, F.text)
 async def process_spouse_birth_country(message: Message, state: FSMContext):
     country = message.text.strip()
-    await state.update_data(spouse_birth_country=country)
+    await state.update_data(spouse_birth_country=country, spouse_birth_region="")
 
     if country in ("O'zbekiston", "Uzbekistan", "🇺🇿 O'zbekiston"):
         text = "Turmush o'rtog'ingiz <b>Tug'ilgan viloyatini</b> tanlang:"
         await message.answer(text, reply_markup=get_region_kb(), parse_mode="HTML")
-        await state.set_state(SpouseStates.birth_region)
+        await goto(state, SpouseStates.birth_region)
     else:
         text = "Turmush o'rtog'ingiz <b>Tug'ilgan shahar/tuman nomini</b> kiriting:"
-        await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-        await state.set_state(SpouseStates.birth_district)
+        await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+        await goto(state, SpouseStates.birth_district)
 
 
 @router.message(SpouseStates.birth_region, F.text)
@@ -584,7 +703,7 @@ async def process_spouse_birth_region(message: Message, state: FSMContext):
     await state.update_data(spouse_birth_region=region)
     text = f"<b>{region}</b> tanlandi.\n\nTurmush o'rtog'ingiz <b>Tug'ilgan tuman yoki shahri:</b>"
     await message.answer(text, reply_markup=get_district_kb(region), parse_mode="HTML")
-    await state.set_state(SpouseStates.birth_district)
+    await goto(state, SpouseStates.birth_district)
 
 
 @router.message(SpouseStates.birth_district, F.text)
@@ -594,7 +713,7 @@ async def process_spouse_birth_district(message: Message, state: FSMContext):
 
     text = "Turmush o'rtog'ingizning <b>Ma'lumot darajasini</b> tanlang:"
     await message.answer(text, reply_markup=get_education_kb(), parse_mode="HTML")
-    await state.set_state(SpouseStates.education_level)
+    await goto(state, SpouseStates.education_level)
 
 
 @router.message(SpouseStates.education_level, F.text)
@@ -602,8 +721,8 @@ async def process_spouse_education(message: Message, state: FSMContext):
     await state.update_data(spouse_education_level=message.text.strip())
 
     text = "📸 <b>Turmush o'rtog'ingizning Green Card fotosuratini yuboring:</b>"
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(SpouseStates.photo)
+    await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+    await goto(state, SpouseStates.photo)
 
 
 @router.message(SpouseStates.photo, F.photo | F.document)
@@ -643,7 +762,7 @@ async def process_spouse_photo(message: Message, state: FSMContext, bot: Bot):
         "<i>(Agar farzand bo'lmasa, '0' tugmasini bosing):</i>"
     )
     await message.answer(text, reply_markup=get_children_count_kb(), parse_mode="HTML")
-    await state.set_state(ApplicationStates.children_count)
+    await goto(state, ApplicationStates.children_count)
 
 
 # ==========================================
@@ -676,8 +795,8 @@ async def ask_child_info(message: Message, state: FSMContext, child_num: int):
         f"👶 <b>{child_num}-farzand ma'lumotlari:</b>\n\n"
         f"Farzandingizning <b>Familiyasini</b> kiriting (Lotin harflarida, masalan: <code>ALIEV</code>):"
     )
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(ChildStates.last_name)
+    await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+    await goto(state, ChildStates.last_name)
 
 
 @router.message(ChildStates.last_name, F.text)
@@ -686,8 +805,8 @@ async def process_child_last_name(message: Message, state: FSMContext):
     await state.update_data(current_child_last_name=last_name)
 
     text = "Farzandingizning <b>Ismini</b> kiriting (Lotin harflarida, masalan: <code>BEHZOD</code>):"
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(ChildStates.first_name)
+    await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+    await goto(state, ChildStates.first_name)
 
 
 @router.message(ChildStates.first_name, F.text)
@@ -697,7 +816,7 @@ async def process_child_first_name(message: Message, state: FSMContext):
 
     text = "Farzandingizning <b>Jinsini</b> tanlang:"
     await message.answer(text, reply_markup=get_gender_kb(), parse_mode="HTML")
-    await state.set_state(ChildStates.gender)
+    await goto(state, ChildStates.gender)
 
 
 @router.message(ChildStates.gender, F.text.in_(["Erkak", "Ayol", "Erkak (Male)", "Ayol (Female)"]))
@@ -709,8 +828,8 @@ async def process_child_gender(message: Message, state: FSMContext):
         "Farzandingizning <b>Tug'ilgan sanasini</b> kiriting.\n"
         "Format: <code>kun.oy.yil</code> (Masalan: <code>01.06.2018</code>):"
     )
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(ChildStates.birth_date)
+    await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+    await goto(state, ChildStates.birth_date)
 
 
 @router.message(ChildStates.birth_date, F.text)
@@ -724,22 +843,22 @@ async def process_child_birth_date(message: Message, state: FSMContext):
 
     text = "Farzandingiz <b>Tug'ilgan davlatini</b> tanlang:"
     await message.answer(text, reply_markup=get_country_kb(), parse_mode="HTML")
-    await state.set_state(ChildStates.birth_country)
+    await goto(state, ChildStates.birth_country)
 
 
 @router.message(ChildStates.birth_country, F.text)
 async def process_child_birth_country(message: Message, state: FSMContext):
     country = message.text.strip()
-    await state.update_data(current_child_birth_country=country)
+    await state.update_data(current_child_birth_country=country, current_child_birth_region="")
 
     if country in ("O'zbekiston", "Uzbekistan", "🇺🇿 O'zbekiston"):
         text = "Farzandingiz <b>Tug'ilgan viloyatini</b> tanlang:"
         await message.answer(text, reply_markup=get_region_kb(), parse_mode="HTML")
-        await state.set_state(ChildStates.birth_region)
+        await goto(state, ChildStates.birth_region)
     else:
         text = "Farzandingiz <b>Tug'ilgan shahar/tuman nomini</b> kiriting:"
-        await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-        await state.set_state(ChildStates.birth_district)
+        await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+        await goto(state, ChildStates.birth_district)
 
 
 @router.message(ChildStates.birth_region, F.text)
@@ -752,7 +871,7 @@ async def process_child_birth_region(message: Message, state: FSMContext):
     await state.update_data(current_child_birth_region=region)
     text = f"<b>{region}</b> tanlandi.\n\nFarzandingiz <b>Tug'ilgan tuman yoki shahri:</b>"
     await message.answer(text, reply_markup=get_district_kb(region), parse_mode="HTML")
-    await state.set_state(ChildStates.birth_district)
+    await goto(state, ChildStates.birth_district)
 
 
 @router.message(ChildStates.birth_district, F.text)
@@ -761,8 +880,8 @@ async def process_child_birth_district(message: Message, state: FSMContext):
     await state.update_data(current_child_birth_district=district, current_child_birth_city=district)
 
     text = "📸 <b>Farzandingizning Green Card fotosuratini yuboring:</b>"
-    await message.answer(text, reply_markup=get_cancel_kb(), parse_mode="HTML")
-    await state.set_state(ChildStates.photo)
+    await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+    await goto(state, ChildStates.photo)
 
 
 @router.message(ChildStates.photo, F.photo | F.document)
@@ -858,7 +977,7 @@ async def show_confirmation(message: Message, state: FSMContext):
     summary += "\n⚠️ <b>Barcha ma'lumotlar to'g'ri kiritilganligiga ishonch hosil qiling!</b>"
 
     await message.answer(summary, reply_markup=get_confirm_kb(), parse_mode="HTML")
-    await state.set_state(ConfirmStates.confirm)
+    await goto(state, ConfirmStates.confirm)
 
 
 @router.message(ConfirmStates.confirm, F.text == "✅ Ma'lumotlarni tasdiqlash va yuborish")
