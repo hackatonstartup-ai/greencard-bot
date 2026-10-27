@@ -1,6 +1,6 @@
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardRemove, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from typing import Optional
-from config import ADMIN_IDS, ADMIN_SEES_ALL
+from config import ADMIN_IDS, ADMIN_HIDE_BUTTONS
 from utils.locations import COUNTRIES, REGIONS, EDUCATION_LEVELS, MARITAL_STATUSES
 
 
@@ -28,7 +28,7 @@ def _chunk_rows(items: list[str], per_row: int = 1) -> list[list[KeyboardButton]
     return rows
 
 
-def get_main_menu_kb(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
+def get_main_menu_kb(user_id: Optional[int] = None):
     """Adminga faqat admin tugmalari, oddiy foydalanuvchiga mijoz tugmalari ko'rsatiladi."""
     if user_id is not None and user_id in ADMIN_IDS:
         return get_admin_menu_kb()
@@ -117,18 +117,22 @@ def get_confirm_kb() -> ReplyKeyboardMarkup:
     )
 
 
-def get_admin_menu_kb() -> ReplyKeyboardMarkup:
-    rows = [
-        [KeyboardButton(text="📊 Statistika")],
-        [KeyboardButton(text="📥 Excel formatda yuklab olish")],
-        [KeyboardButton(text="📨 Mijozga Confirmation Code yuborish")],
-    ]
-    if ADMIN_SEES_ALL:  # sinov rejimi: admin mijoz tugmalarini ham ko'radi
-        rows += [
-            [KeyboardButton(text="📝 Anketa to'ldirish")],
-            [KeyboardButton(text="📷 To'g'ri rasm talablari"), KeyboardButton(text="🛂 Pasport rasmi talablari")],
-        ]
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+def get_admin_menu_kb():
+    """Admin menyusi. ADMIN_HIDE_BUTTONS yoqilgan bo'lsa, eski tugmalar ham olib tashlanadi."""
+    if ADMIN_HIDE_BUTTONS:
+        return ReplyKeyboardRemove()
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📊 Statistika")],
+            [KeyboardButton(text="📥 Excel formatda yuklab olish")],
+            [KeyboardButton(text="📨 Mijozga Confirmation Code yuborish")],
+        ],
+        resize_keyboard=True
+    )
+
+
+def get_admin_cancel_kb():
+    return ReplyKeyboardRemove() if ADMIN_HIDE_BUTTONS else get_cancel_kb()
 
 
 def get_payment_admin_kb(payment_id: int, user_id: int) -> InlineKeyboardMarkup:
