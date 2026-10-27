@@ -1,6 +1,6 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from typing import Optional
-from config import ADMIN_IDS
+from config import ADMIN_IDS, ADMIN_SEES_ALL
 from utils.locations import COUNTRIES, REGIONS, EDUCATION_LEVELS, MARITAL_STATUSES
 
 
@@ -118,14 +118,17 @@ def get_confirm_kb() -> ReplyKeyboardMarkup:
 
 
 def get_admin_menu_kb() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📊 Statistika")],
-            [KeyboardButton(text="📥 Excel formatda yuklab olish")],
-            [KeyboardButton(text="📨 Mijozga Confirmation Code yuborish")]
-        ],
-        resize_keyboard=True
-    )
+    rows = [
+        [KeyboardButton(text="📊 Statistika")],
+        [KeyboardButton(text="📥 Excel formatda yuklab olish")],
+        [KeyboardButton(text="📨 Mijozga Confirmation Code yuborish")],
+    ]
+    if ADMIN_SEES_ALL:  # sinov rejimi: admin mijoz tugmalarini ham ko'radi
+        rows += [
+            [KeyboardButton(text="📝 Anketa to'ldirish")],
+            [KeyboardButton(text="📷 To'g'ri rasm talablari"), KeyboardButton(text="🛂 Pasport rasmi talablari")],
+        ]
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
 def get_payment_admin_kb(payment_id: int, user_id: int) -> InlineKeyboardMarkup:
