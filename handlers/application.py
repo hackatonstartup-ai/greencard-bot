@@ -229,7 +229,7 @@ async def process_payment_receipt(message: Message, state: FSMContext, bot: Bot)
         "✅ <b>To'lov chekingiz adminga yuborildi!</b>\n\n"
         "Admin to'lovni tekshirib tasdiqlagach (odatda 5-10 daqiqa ichida), "
         "anketa to'ldirish avtomatik boshlanadi. Iltimos, kuting... ⏳",
-        reply_markup=get_main_menu_kb(),
+        reply_markup=get_main_menu_kb(user_id),
         parse_mode="HTML"
     )
 
@@ -340,7 +340,7 @@ async def reject_payment_cb(callback: CallbackQuery, bot: Bot):
             "⚠️ <b>To'lov chekingiz tasdiqlanmadi.</b>\n\n"
             "Iltimos, haqiqiy to'lov chekini qayta yuboring yoki admin bilan bog'laning."
         )
-        await bot.send_message(chat_id=target_user_id, text=reject_msg, reply_markup=get_main_menu_kb(), parse_mode="HTML")
+        await bot.send_message(chat_id=target_user_id, text=reject_msg, reply_markup=get_main_menu_kb(target_user_id), parse_mode="HTML")
     except Exception as e:
         print(f"Error messaging user {target_user_id}: {e}")
 
@@ -995,7 +995,7 @@ async def process_confirm(message: Message, state: FSMContext, bot: Bot):
         "natija (Confirmation Code) ushbu bot orqali sizga taqdim etiladi.\n\n"
         "Xizmatingizdan mamnunmiz! Omad tilaymiz! 🇺🇸"
     )
-    await message.answer(success_text, reply_markup=get_main_menu_kb(), parse_mode="HTML")
+    await message.answer(success_text, reply_markup=get_main_menu_kb(user_id), parse_mode="HTML")
 
     birth_place = f"{data.get('birth_region', '')} {data.get('birth_district', '')}".strip()
     passport_val = data.get('passport_number') or "Yo'q"
