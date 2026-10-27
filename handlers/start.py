@@ -3,6 +3,7 @@ from aiogram.types import Message
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from database import add_or_update_user
+from config import ADMIN_IDS
 from keyboards import get_main_menu_kb
 
 router = Router()
@@ -17,13 +18,20 @@ async def cmd_start(message: Message, state: FSMContext):
         full_name=user.full_name
     )
     
+    if user.id in ADMIN_IDS:
+        await message.answer(
+            "👑 <b>Admin paneli.</b>\nKerakli bo'limni tanlang (statistika uchun /admin):",
+            reply_markup=get_main_menu_kb(user.id), parse_mode="HTML"
+        )
+        return
+
     welcome_text = (
         f"Assalomu alaykum, <b>{user.first_name}</b>!\n\n"
         "🇺🇸 <b>Green Card (DV Lottery) anketasini to'ldirish xizmatiga xush kelibsiz!</b>\n\n"
         "Biz sizning anketangizni AQSh elchixonasi talablari asosida, 100% xatosiz va ishonchli to'ldirib beramiz.\n\n"
         "Kerakli bo'limni tanlang:"
     )
-    await message.answer(welcome_text, reply_markup=get_main_menu_kb(), parse_mode="HTML")
+    await message.answer(welcome_text, reply_markup=get_main_menu_kb(user.id), parse_mode="HTML")
 
 @router.message(F.text == "❌ Bekor qilish")
 @router.message(Command("cancel"))
@@ -31,7 +39,7 @@ async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "Amal bekor qilindi. Bosh menyuga qaytdingiz.",
-        reply_markup=get_main_menu_kb()
+        reply_markup=get_main_menu_kb(message.from_user.id)
     )
 
 @router.message(F.text == "🏠 Asosiy menyu")
@@ -39,7 +47,7 @@ async def cmd_main_menu(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "Asosiy menyu:",
-        reply_markup=get_main_menu_kb()
+        reply_markup=get_main_menu_kb(message.from_user.id)
     )
 
 from pathlib import Path
