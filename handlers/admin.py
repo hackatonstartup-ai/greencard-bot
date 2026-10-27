@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 
 from config import ADMIN_IDS, EXPORTS_DIR
 from database import get_stats, get_all_applications, get_application, update_confirmation_code
-from keyboards import get_admin_menu_kb, get_main_menu_kb, get_cancel_kb
+from keyboards import get_admin_menu_kb, get_main_menu_kb, get_admin_cancel_kb
 from states import AdminStates
 from utils.excel import export_applications_to_excel
 
@@ -31,10 +31,15 @@ async def cmd_admin(message: Message, state: FSMContext):
         f"• Kutilayotgan (Kiritilishi kerak): <b>{stats['pending_apps']}</b> ta\n"
         f"• Kiritilgan (Tasdiqlangan): <b>{stats['completed_apps']}</b> ta\n"
         f"• Bot foydalanuvchilari soni: <b>{stats['total_users']}</b> ta\n\n"
-        "Kerakli bo'limni tanlang:"
+        "Buyruqlar:\n"
+        "/stats — statistika\n"
+        "/excel — Excel yuklab olish\n"
+        "/code — mijozga Confirmation Code yuborish\n"
+        "/cancel — amalni bekor qilish"
     )
     await message.answer(text, reply_markup=get_admin_menu_kb(), parse_mode="HTML")
 
+@router.message(Command("stats"))
 @router.message(F.text == "📊 Statistika")
 async def show_stats(message: Message):
     if not is_admin(message.from_user.id):
@@ -50,6 +55,7 @@ async def show_stats(message: Message):
     )
     await message.answer(text, parse_mode="HTML")
 
+@router.message(Command("excel"))
 @router.message(F.text == "📥 Excel formatda yuklab olish")
 async def export_excel(message: Message):
     if not is_admin(message.from_user.id):
@@ -73,6 +79,7 @@ async def export_excel(message: Message):
         parse_mode="HTML"
     )
 
+@router.message(Command("code"))
 @router.message(F.text == "📨 Mijozga Confirmation Code yuborish")
 async def send_code_start(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -81,7 +88,7 @@ async def send_code_start(message: Message, state: FSMContext):
     await message.answer(
         "Qaysi anketa (ID) ga Confirmation Code yubormoqchisiz?\n"
         "Anketa ID raqamini kiriting (Masalan: <code>1</code>):",
-        reply_markup=get_cancel_kb(),
+        reply_markup=get_admin_cancel_kb(),
         parse_mode="HTML"
     )
     await state.set_state(AdminStates.waiting_for_app_id)
@@ -103,7 +110,7 @@ async def process_code_app_id(message: Message, state: FSMContext):
     await message.answer(
         f"👤 Arizachi: <b>{app['first_name']} {app['last_name']}</b> (Tel: {app['phone_number']})\n\n"
         "Endi rasmiy <b>Confirmation Code</b> ni kiriting (Masalan: <code>20261O0DZK3XYZ89</code>):",
-        reply_markup=get_cancel_kb(),
+        reply_markup=get_admin_cancel_kb(),
         parse_mode="HTML"
     )
     await state.set_state(AdminStates.waiting_for_confirmation_code)
