@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
@@ -20,13 +22,18 @@ from keyboards import (
 )
 from database import (
     create_application, create_payment, resolve_payment,
-    update_payment_status, has_approved_payment
+    update_payment_status, has_approved_payment, consume_payment, get_payment,
+    create_auto_payment, get_recent_pending_auto_payment,
+    mark_payment_paid_if_pending, mark_payment_cancelled_if_pending,
 )
+from utils import hamyon
 from utils.locations import REGIONS, PHOTO_RULES
 from utils.photo import validate_and_save_photo
-from config import PHOTOS_DIR, ADMIN_IDS
+from config import PHOTOS_DIR, ADMIN_IDS, PAYMENT_AMOUNT
 
 router = Router()
+logger = logging.getLogger(__name__)
+_poll_tasks: set = set()
 
 PAYMENT_INSTRUCTIONS = (
     "Biz sizning anketangizni AQSh elchixonasi talablari asosida, "
@@ -203,8 +210,179 @@ async def start_with_payment(message: Message, state: FSMContext):
         return
 
     await state.clear()
+
+    if hamyon.enabled():
+        if await start_auto_payment(message, state):
+            return
+        await message.answer(
+            "⚠️ Avtomatik to'lov vaqtincha ishlamayapti. Quyidagi usul bilan to'lang:",
+            parse_mode="HTML"
+        )
+
     await message.answer(PAYMENT_INSTRUCTIONS, reply_markup=get_cancel_kb(), parse_mode="HTML")
     await goto(state, PaymentStates.waiting_for_receipt)
+
+
+# ==========================================
+# 1a. AVTOMATIK TO'LOV (hamyon-api.uz)
+# ==========================================
+
+def _fmt_card(card: str) -> str:
+    digits = re.sub(r"\D", "", card)
+    return " ".join(digits[i:i + 4] for i in range(0, len(digits), 4)) if len(digits) >= 12 else card
+
+
+def _auto_pay_kb(payment_id: int):
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ To'lov qildim — tekshirish", callback_data=f"hp_check:{payment_id}")
+    ]])
+
+
+def _auto_pay_text(card: str, amount: int) -> str:
+    card_digits = re.sub(r"\D", "", card)
+    return (
+        "💳 <b>To'lov</b>\n\n"
+        f"Karta raqami: <code>{card_digits}</code>\n"
+        f"To'lov summasi: <code>{amount}</code> so'm\n\n"
+        "⚠️ <b>Aynan shu summani</b> (tiyinsiz, ortiqcha-kamsiz) o'tkazing, aks holda to'lov avtomatik topilmaydi.\n"
+        "⏳ To'lov uchun <b>5 daqiqa</b> vaqt bor. To'lov tushishi bilan anketa avtomatik boshlanadi."
+    )
+
+
+async def start_auto_payment(message: Message, state: FSMContext) -> bool:
+    """Avtomatik to'lov yaratadi. Muvaffaqiyatsiz bo'lsa False (chek usuliga o'tiladi)."""
+    user_id = message.from_user.id
+    bot = message.bot
+
+    existing = await get_recent_pending_auto_payment(user_id)
+    if existing:
+        db_id, amount, card = existing["id"], existing["amount"], existing["card"]
+        provider_id = existing["provider_payment_id"]
+        fresh = False
+    else:
+        try:
+            info = await hamyon.create_payment(PAYMENT_AMOUNT, order_id=f"u{user_id}_{int(datetime.now().timestamp())}")
+        except Exception as e:
+            logger.error("Hamyon create_payment xatosi: %s", e)
+            return False
+        provider_id, amount, card = info["payment_id"], info["amount"], info["card"]
+        db_id = await create_auto_payment(user_id, provider_id, amount, card)
+        fresh = True
+
+    await message.answer(
+        _auto_pay_text(card, amount),
+        reply_markup=_auto_pay_kb(db_id),
+        parse_mode="HTML"
+    )
+    await message.answer("Bekor qilish uchun pastdagi tugmani bosing.", reply_markup=get_cancel_kb())
+
+    if fresh:
+        task = asyncio.create_task(_poll_payment(bot, state.storage, db_id, provider_id, amount))
+        _poll_tasks.add(task)
+        task.add_done_callback(_poll_tasks.discard)
+    return True
+
+
+async def activate_questionnaire(bot: Bot, storage, user_id: int) -> None:
+    """To'lov tasdiqlangach foydalanuvchida anketani boshlaydi."""
+    user_state = FSMContext(storage=storage, key=StorageKey(bot_id=bot.id, chat_id=user_id, user_id=user_id))
+    await user_state.clear()
+    await user_state.update_data(app_data={}, children=[], history=[])
+    await user_state.set_state(ApplicationStates.last_name)
+    await bot.send_message(
+        chat_id=user_id,
+        text=(
+            "🎉 <b>To'lovingiz qabul qilindi!</b>\n\n"
+            "Endi Green Card anketangizni to'ldirishni boshlaymiz.\n\n"
+            "1-qadam: <b>Familiyangizni</b> kiriting (Pasportingizdagi lotin harflarida, masalan: <code>ALIEV</code>):"
+        ),
+        reply_markup=get_nav_kb(),
+        parse_mode="HTML"
+    )
+
+
+async def verify_and_settle(bot: Bot, storage, payment: dict) -> str:
+    """Provayderdan holatni so'rab tekshiradi. Qaytaradi: 'paid' | 'cancel' | 'wait'."""
+    status, amount = await hamyon.get_status(payment["provider_payment_id"])
+    if status == "paid":
+        if amount is not None and payment.get("amount") and abs(amount - float(payment["amount"])) > 0.5:
+            logger.error("To'lov summasi mos emas: kutilgan=%s, kelgan=%s (payment #%s)",
+                         payment["amount"], amount, payment["id"])
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        f"⚠️ To'lov #{payment['id']} summasi mos emas: kutilgan {payment['amount']}, kelgan {amount}. "
+                        f"Foydalanuvchi ID: {payment['user_id']}. Qo'lda tekshiring."
+                    )
+                except Exception:
+                    pass
+            return "wait"
+        if await mark_payment_paid_if_pending(payment["id"]):
+            await activate_questionnaire(bot, storage, payment["user_id"])
+        return "paid"
+    if status == "cancel":
+        if await mark_payment_cancelled_if_pending(payment["id"]):
+            try:
+                await bot.send_message(
+                    payment["user_id"],
+                    "⌛️ To'lov topilmadi yoki vaqti tugadi. Qaytadan urinib ko'rish uchun «📝 Anketa to'ldirish» ni bosing.",
+                )
+            except Exception:
+                pass
+        return "cancel"
+    return "wait"
+
+
+async def _poll_payment(bot: Bot, storage, db_id: int, provider_id: str, amount: int) -> None:
+    """To'lov holatini ~6 daqiqa davomida har 5 soniyada tekshiradi."""
+    try:
+        for _ in range(72):
+            await asyncio.sleep(5)
+            payment = await get_payment(db_id)
+            if not payment or payment["status"] != "pending":
+                return
+            try:
+                result = await verify_and_settle(bot, storage, payment)
+            except Exception as e:
+                logger.warning("Hamyon status xatosi (payment #%s): %s", db_id, e)
+                continue
+            if result in ("paid", "cancel"):
+                return
+    except Exception as e:
+        logger.exception("Polling xatosi: %s", e)
+
+
+@router.callback_query(F.data.startswith("hp_check:"))
+async def check_auto_payment_cb(callback: CallbackQuery, bot: Bot, state: FSMContext):
+    try:
+        db_id = int(callback.data.split(":")[1])
+    except (ValueError, IndexError):
+        await callback.answer()
+        return
+    payment = await get_payment(db_id)
+    if not payment or payment["user_id"] != callback.from_user.id:
+        await callback.answer("To'lov topilmadi.", show_alert=True)
+        return
+    if payment["status"] == "approved":
+        await callback.answer("To'lov allaqachon qabul qilingan ✅", show_alert=True)
+        return
+    if payment["status"] != "pending":
+        await callback.answer("Bu to'lov muddati tugagan. Qaytadan boshlang.", show_alert=True)
+        return
+    try:
+        result = await verify_and_settle(bot, state.storage, payment)
+    except Exception as e:
+        logger.warning("Hamyon check xatosi: %s", e)
+        await callback.answer("Tekshirishda xatolik. Birozdan keyin urinib ko'ring.", show_alert=True)
+        return
+    if result == "paid":
+        await callback.answer("To'lov qabul qilindi ✅")
+    elif result == "wait":
+        await callback.answer("To'lov hali topilmadi. Summa aniq to'g'riligini tekshirib, 10-20 soniyadan keyin qayta bosing.", show_alert=True)
+    else:
+        await callback.answer()
 
 
 @router.message(PaymentStates.waiting_for_receipt, F.photo | F.document)
@@ -986,6 +1164,7 @@ async def process_confirm(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
 
     app_id = await create_application(user_id=user_id, app_data=data)
+    await consume_payment(user_id)
     await state.clear()
 
     success_text = (
