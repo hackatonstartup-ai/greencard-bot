@@ -1,4 +1,6 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from typing import Optional
+from config import ADMIN_IDS
 from utils.locations import COUNTRIES, REGIONS, EDUCATION_LEVELS, MARITAL_STATUSES
 
 
@@ -26,7 +28,10 @@ def _chunk_rows(items: list[str], per_row: int = 1) -> list[list[KeyboardButton]
     return rows
 
 
-def get_main_menu_kb() -> ReplyKeyboardMarkup:
+def get_main_menu_kb(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
+    """Adminga faqat admin tugmalari, oddiy foydalanuvchiga mijoz tugmalari ko'rsatiladi."""
+    if user_id is not None and user_id in ADMIN_IDS:
+        return get_admin_menu_kb()
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📝 Anketa to'ldirish")],
@@ -117,8 +122,7 @@ def get_admin_menu_kb() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="📊 Statistika")],
             [KeyboardButton(text="📥 Excel formatda yuklab olish")],
-            [KeyboardButton(text="📨 Mijozga Confirmation Code yuborish")],
-            [KeyboardButton(text="🏠 Asosiy menyu")]
+            [KeyboardButton(text="📨 Mijozga Confirmation Code yuborish")]
         ],
         resize_keyboard=True
     )
