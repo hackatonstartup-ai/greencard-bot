@@ -21,3 +21,9 @@ EXPORTS_DIR = BASE_DIR / os.getenv("EXPORTS_DIR", "data/exports")
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+# --- Avtomatik to'lov (hamyon-api.uz). Ikkalasi ham kiritilsa yoqiladi, aks holda chek usuli ishlaydi ---
+HAMYON_SHOP_ID = os.getenv("HAMYON_SHOP_ID", "").strip()
+HAMYON_SHOP_KEY = os.getenv("HAMYON_SHOP_KEY", "").strip()
+HAMYON_BASE_URL = os.getenv("HAMYON_BASE_URL", "https://hamyon-api.uz").strip().rstrip("/")
+PAYMENT_AMOUNT = int(os.getenv("PAYMENT_AMOUNT", "50000") or 50000)
