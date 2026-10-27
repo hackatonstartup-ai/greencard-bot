@@ -11,8 +11,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 raw_admins = os.getenv("ADMIN_IDS", "").strip()
 ADMIN_IDS = [int(x.strip()) for x in raw_admins.split(",") if x.strip().isdigit()]
 
-# 1 bo'lsa, admin ham mijoz tugmalarini ko'radi (sinash uchun). Odatda 0.
-ADMIN_SEES_ALL = os.getenv("ADMIN_SEES_ALL", "0").strip().lower() in ("1", "true", "yes")
+# 1 bo'lsa, adminda hech qanday doimiy (reply) tugma ko'rsatilmaydi; admin buyruqlar bilan ishlaydi.
+ADMIN_HIDE_BUTTONS = os.getenv("ADMIN_HIDE_BUTTONS", "1").strip().lower() in ("1", "true", "yes")
 
 DB_PATH = BASE_DIR / os.getenv("DB_PATH", "data/bot.db")
 PHOTOS_DIR = BASE_DIR / os.getenv("PHOTOS_DIR", "data/photos")
