@@ -116,6 +116,20 @@ async def init_db():
         if "birth_region" not in child_cols:
             await db.execute("ALTER TABLE children ADD COLUMN birth_region TEXT")
 
+        async with db.execute("PRAGMA table_info(payments)") as cursor:
+            pay_cols = {row[1] for row in await cursor.fetchall()}
+        if "used" not in pay_cols:
+            await db.execute("ALTER TABLE payments ADD COLUMN used INTEGER DEFAULT 0")
+            # Eski to'lovlar: anketasi bor foydalanuvchilarning to'lovi ishlatilgan deb hisoblanadi
+            await db.execute("""
+                UPDATE payments SET used = 1
+                WHERE status = 'approved'
+                  AND user_id IN (SELECT user_id FROM applications)
+            """)
+        for col, typ in [("provider_payment_id", "TEXT"), ("amount", "INTEGER"), ("card", "TEXT")]:
+            if col not in pay_cols:
+                await db.execute(f"ALTER TABLE payments ADD COLUMN {col} {typ}")
+
         await db.commit()
 
 async def add_or_update_user(user_id: int, username: Optional[str], full_name: Optional[str], phone: Optional[str] = None):
@@ -183,11 +197,83 @@ async def update_payment_status(payment_id: int, status: str) -> bool:
         return cursor.rowcount > 0
 
 async def has_approved_payment(user_id: int) -> bool:
+    """Foydalanuvchida hali anketaga sarflanmagan (used=0) tasdiqlangan to'lov bormi."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("""
-            SELECT id FROM payments WHERE user_id = ? AND status = 'approved' LIMIT 1
+            SELECT id FROM payments
+            WHERE user_id = ? AND status = 'approved' AND COALESCE(used, 0) = 0
+            LIMIT 1
         """, (user_id,)) as cursor:
             return (await cursor.fetchone()) is not None
+
+
+async def consume_payment(user_id: int) -> None:
+    """Anketa yuborilganda bitta to'lovni 'ishlatilgan' deb belgilaydi."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            UPDATE payments SET used = 1
+            WHERE id = (
+                SELECT id FROM payments
+                WHERE user_id = ? AND status = 'approved' AND COALESCE(used, 0) = 0
+                ORDER BY id LIMIT 1
+            )
+        """, (user_id,))
+        await db.commit()
+
+
+async def create_auto_payment(user_id: int, provider_payment_id: str, amount: int, card: str) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("""
+            INSERT INTO payments (user_id, receipt_photo, status, provider_payment_id, amount, card)
+            VALUES (?, 'auto', 'pending', ?, ?, ?)
+        """, (user_id, provider_payment_id, amount, card))
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_payment_by_provider_id(provider_payment_id: str) -> Optional[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM payments WHERE provider_payment_id = ?", (str(provider_payment_id),)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
+async def get_recent_pending_auto_payment(user_id: int, max_age_sec: int = 270) -> Optional[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT * FROM payments
+            WHERE user_id = ? AND status = 'pending' AND provider_payment_id IS NOT NULL
+              AND created_at >= datetime('now', ?)
+            ORDER BY id DESC LIMIT 1
+            """,
+            (user_id, f"-{int(max_age_sec)} seconds"),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
+async def mark_payment_paid_if_pending(payment_id: int) -> bool:
+    """Faqat 'pending' bo'lsa 'approved' qiladi. Takroriy callbacklardan himoya (True faqat birinchi marta)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE payments SET status = 'approved' WHERE id = ? AND status = 'pending'", (payment_id,)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def mark_payment_cancelled_if_pending(payment_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE payments SET status = 'cancelled' WHERE id = ? AND status = 'pending'", (payment_id,)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
 
 async def create_application(user_id: int, app_data: Dict[str, Any]) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
