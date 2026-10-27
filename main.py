@@ -12,6 +12,9 @@ from aiogram.enums import ParseMode
 from config import BOT_TOKEN, ADMIN_IDS
 from database import init_db
 from handlers import start, application, admin
+from handlers.application import verify_and_settle
+from database import get_payment_by_provider_id, mark_payment_cancelled_if_pending
+from utils import hamyon
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,11 +26,46 @@ logger = logging.getLogger(__name__)
 async def handle_ping(request):
     return web.Response(text="Green Card Telegram Bot is running on Render 24/7! 🇺🇸")
 
-async def start_web_server():
+async def hamyon_prepare(request):
+    return web.json_response({"status": "ok"})
+
+
+async def hamyon_complete(request):
+    """hamyon-api.uz 'paid' / 'cancel' callbacki. Ishonch uchun holat API orqali qayta tekshiriladi."""
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = dict(await request.post()) or dict(request.query)
+        pid = hamyon.find(body, ("payment_id", "id"))
+        if pid is None:
+            return web.json_response({"status": "ignored"})
+
+        sign = hamyon.find(body, ("sign", "signature", "hash"))
+        if sign:
+            shop_id = str(hamyon.find(body, ("shop_id",)) or "")
+            amount = str(hamyon.find(body, ("amount",)) or "")
+            if not hamyon.verify_sign(shop_id, str(pid), amount, sign):
+                logger.warning("Hamyon callback imzosi mos kelmadi (payment %s)", pid)
+                return web.json_response({"status": "bad sign"}, status=403)
+
+        payment = await get_payment_by_provider_id(str(pid))
+        if payment and payment["status"] == "pending":
+            await verify_and_settle(request.app["bot"], request.app["storage"], payment)
+    except Exception as e:
+        logger.exception("Hamyon callback xatosi: %s", e)
+    return web.json_response({"status": "ok"})
+
+
+async def start_web_server(bot=None, storage=None):
     port = int(os.getenv("PORT", 8080))
     app = web.Application()
+    app["bot"] = bot
+    app["storage"] = storage
     app.router.add_get("/", handle_ping)
     app.router.add_get("/health", handle_ping)
+    app.router.add_post("/hamyon/prepare", hamyon_prepare)
+    app.router.add_post("/hamyon/complete", hamyon_complete)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
@@ -42,14 +80,14 @@ async def main():
     logger.info("Ma'lumotlar bazasi ishga tushirilmoqda...")
     await init_db()
 
-    # Render uchun web serverni ishga tushirish (Health check port)
-    await start_web_server()
-
     bot = Bot(
         token=BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
     )
     dp = Dispatcher(storage=MemoryStorage())
+
+    # Render uchun web server (health check + to'lov callbacklari)
+    await start_web_server(bot, dp.storage)
 
     # Routers ro'yxatdan o'tkaziladi
     dp.include_router(start.router)
