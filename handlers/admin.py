@@ -9,7 +9,9 @@ from config import ADMIN_IDS, EXPORTS_DIR
 from database import get_stats, get_all_applications, get_application, update_confirmation_code
 from keyboards import get_admin_menu_kb, get_main_menu_kb, get_admin_cancel_kb
 from states import AdminStates
+import asyncio
 from utils.excel import export_applications_to_excel
+from utils.export import build_application_zip
 
 router = Router()
 
@@ -149,3 +151,29 @@ async def process_confirmation_code_send(message: Message, state: FSMContext, bo
             f"(Foydalanuvchi botni bloklagan bo'lishi mumkin)",
             reply_markup=get_admin_menu_kb()
         )
+
+
+@router.message(Command("zip"))
+async def send_application_zip(message: Message):
+    """/zip <anketa_id> — shu anketani ZIP (info.txt + PNG) qilib yuboradi."""
+    if not is_admin(message.from_user.id):
+        return
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("Foydalanish: <code>/zip 12</code> (12 — anketa ID raqami)", parse_mode="HTML")
+        return
+
+    app = await get_application(int(parts[1]))
+    if not app:
+        await message.answer(f"⚠️ #{parts[1]} raqamli anketa topilmadi.")
+        return
+
+    tg = {"id": app.get("user_id")}
+    zip_path = await asyncio.to_thread(build_application_zip, app["id"], app, tg, EXPORTS_DIR)
+    try:
+        await message.answer_document(
+            FSInputFile(str(zip_path)),
+            caption=f"📦 #{app['id']} anketa: {app.get('last_name')} {app.get('first_name')}",
+        )
+    finally:
+        zip_path.unlink(missing_ok=True)
