@@ -4,6 +4,7 @@ from config import ADMIN_IDS, ADMIN_HIDE_BUTTONS
 from utils.locations import COUNTRIES, REGIONS, EDUCATION_LEVELS, MARITAL_STATUSES
 
 
+SUPPORT_BUTTON_TEXT = "☎️ Aloqa markazi"
 BACK_TEXT = "⬅️ Orqaga"
 RESTART_TEXT = "🔁 Boshidan boshlash"
 CANCEL_TEXT = "❌ Bekor qilish"
@@ -35,7 +36,8 @@ def get_main_menu_kb(user_id: Optional[int] = None):
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📝 Anketa to'ldirish")],
-            [KeyboardButton(text="📷 To'g'ri rasm talablari"), KeyboardButton(text="🛂 Pasport rasmi talablari")]
+            [KeyboardButton(text="📷 To'g'ri rasm talablari"), KeyboardButton(text="🛂 Pasport rasmi talablari")],
+            [KeyboardButton(text=SUPPORT_BUTTON_TEXT)]
         ],
         resize_keyboard=True
     )
