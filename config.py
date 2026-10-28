@@ -27,3 +27,8 @@ HAMYON_SHOP_ID = os.getenv("HAMYON_SHOP_ID", "").strip()
 HAMYON_SHOP_KEY = os.getenv("HAMYON_SHOP_KEY", "").strip()
 HAMYON_BASE_URL = os.getenv("HAMYON_BASE_URL", "https://hamyon-api.uz").strip().rstrip("/")
 PAYMENT_AMOUNT = int(os.getenv("PAYMENT_AMOUNT", "50000") or 50000)
+
+# --- Aloqa markazi (mijozlar uchun) ---
+SUPPORT_PHONE = os.getenv("SUPPORT_PHONE", "").strip()          # masalan: +998901234567
+SUPPORT_TELEGRAM = os.getenv("SUPPORT_TELEGRAM", "").strip().lstrip("@")  # masalan: operator_username
+SUPPORT_HOURS = os.getenv("SUPPORT_HOURS", "09:00 – 21:00").strip()
