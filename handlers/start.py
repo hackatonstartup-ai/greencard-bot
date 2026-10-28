@@ -3,8 +3,9 @@ from aiogram.types import Message
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from database import add_or_update_user
-from config import ADMIN_IDS
-from keyboards import get_main_menu_kb
+from config import ADMIN_IDS, SUPPORT_PHONE, SUPPORT_TELEGRAM, SUPPORT_HOURS
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from keyboards import get_main_menu_kb, SUPPORT_BUTTON_TEXT
 
 router = Router()
 
@@ -99,3 +100,22 @@ async def show_passport_requirements(message: Message):
             parse_mode="HTML"
         )
     await message.answer(text, parse_mode="HTML")
+
+
+@router.message(F.text == SUPPORT_BUTTON_TEXT)
+async def show_support(message: Message):
+    lines = ["☎️ <b>ALOQA MARKAZI</b>\n", "Savollaringiz bo'lsa yoki yordam kerak bo'lsa, biz bilan bog'laning. Sizga yordam berishdan xursandmiz! 🤝\n"]
+    if SUPPORT_PHONE:
+        lines.append(f"📞 <b>Telefon:</b> <code>{SUPPORT_PHONE}</code>")
+    if SUPPORT_TELEGRAM:
+        lines.append(f"💬 <b>Telegram:</b> @{SUPPORT_TELEGRAM}")
+    lines.append(f"🕘 <b>Ish vaqti:</b> {SUPPORT_HOURS}")
+    if not SUPPORT_PHONE and not SUPPORT_TELEGRAM:
+        lines.append("\nAloqa ma'lumotlari tez orada qo'shiladi.")
+
+    kb = None
+    if SUPPORT_TELEGRAM:
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="💬 Operatorga yozish", url=f"https://t.me/{SUPPORT_TELEGRAM}")
+        ]])
+    await message.answer("\n".join(lines), reply_markup=kb, parse_mode="HTML")
