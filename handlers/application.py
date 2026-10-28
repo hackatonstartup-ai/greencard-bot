@@ -29,7 +29,8 @@ from database import (
 from utils import hamyon
 from utils.locations import REGIONS, PHOTO_RULES
 from utils.photo import validate_and_save_photo
-from config import PHOTOS_DIR, ADMIN_IDS, PAYMENT_AMOUNT
+from config import PHOTOS_DIR, ADMIN_IDS, PAYMENT_AMOUNT, EXPORTS_DIR
+from utils.export import build_application_zip
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -1220,6 +1221,33 @@ async def process_confirm(message: Message, state: FSMContext, bot: Bot):
                 )
         except Exception as e:
             print(f"Failed to notify admin {admin_id}: {e}")
+
+    # Adminga to'liq anketa ZIP (info.txt + PNG rasmlar) sifatida yuboriladi
+    zip_path = None
+    try:
+        tg = {
+            "id": user_id,
+            "username": message.from_user.username,
+            "full_name": message.from_user.full_name,
+        }
+        zip_path = await asyncio.to_thread(build_application_zip, app_id, data, tg, EXPORTS_DIR)
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_document(
+                    chat_id=admin_id,
+                    document=FSInputFile(str(zip_path)),
+                    caption=f"📦 #{app_id} anketa: {data.get('last_name')} {data.get('first_name')} (info.txt + rasmlar)",
+                )
+            except Exception as e:
+                print(f"Failed to send zip to admin {admin_id}: {e}")
+    except Exception as e:
+        logger.exception("ZIP yaratishda xatolik (#%s): %s", app_id, e)
+    finally:
+        if zip_path:
+            try:
+                zip_path.unlink()
+            except Exception:
+                pass
 
 
 @router.message(ConfirmStates.confirm, F.text == "🔄 Qaytadan to'ldirish")
