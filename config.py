@@ -29,6 +29,6 @@ HAMYON_BASE_URL = os.getenv("HAMYON_BASE_URL", "https://hamyon-api.uz").strip().
 PAYMENT_AMOUNT = int(os.getenv("PAYMENT_AMOUNT", "50000") or 50000)
 
 # --- Aloqa markazi (mijozlar uchun) ---
-SUPPORT_PHONE = os.getenv("SUPPORT_PHONE", "").strip()          # masalan: +998901234567
-SUPPORT_TELEGRAM = os.getenv("SUPPORT_TELEGRAM", "").strip().lstrip("@")  # masalan: operator_username
-SUPPORT_HOURS = os.getenv("SUPPORT_HOURS", "09:00 – 21:00").strip()
+SUPPORT_PHONE = os.getenv("SUPPORT_PHONE", "+998902301905").strip()          # masalan: +998901234567
+SUPPORT_TELEGRAM = os.getenv("SUPPORT_TELEGRAM", "greencarduz_admin").strip().lstrip("@")  # masalan: operator_username
+SUPPORT_HOURS = os.getenv("SUPPORT_HOURS", "24/7").strip()
