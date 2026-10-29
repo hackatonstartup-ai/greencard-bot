@@ -1350,34 +1350,6 @@ async def finalize_application(bot: Bot, user_id: int, paid: bool = True) -> Opt
         "<i>Barcha anketalarni Excel formatda yuklab olish uchun /admin buyrug'idan foydalaning.</i>"
     )
 
-    main_photo_file = PHOTOS_DIR / data.get("photo_path") if data.get("photo_path") else None
-    passport_photo_file = PHOTOS_DIR / data.get("passport_photo_path") if data.get("passport_photo_path") else None
-
-    for admin_id in ADMIN_IDS:
-        try:
-            if main_photo_file and main_photo_file.exists():
-                await bot.send_photo(
-                    chat_id=admin_id,
-                    photo=FSInputFile(str(main_photo_file)),
-                    caption=admin_alert,
-                    parse_mode="HTML"
-                )
-            else:
-                await bot.send_message(
-                    chat_id=admin_id,
-                    text=admin_alert,
-                    parse_mode="HTML"
-                )
-            if passport_photo_file and passport_photo_file.exists():
-                await bot.send_photo(
-                    chat_id=admin_id,
-                    photo=FSInputFile(str(passport_photo_file)),
-                    caption=f"🛂 #{app_id}-anketa uchun PASPORT ({data.get('last_name')} {data.get('first_name')})",
-                    parse_mode="HTML"
-                )
-        except Exception as e:
-            print(f"Failed to notify admin {admin_id}: {e}")
-
     # Adminga to'liq anketa ZIP (info.txt + PNG rasmlar) sifatida yuboriladi
     zip_path = None
     try:
