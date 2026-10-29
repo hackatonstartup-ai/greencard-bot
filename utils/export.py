@@ -88,9 +88,12 @@ def _photo_list(data: Dict[str, Any]) -> List[Tuple[str, Optional[str]]]:
     ]
     spouse = data.get("spouse")
     if spouse:
+        items.append(("03_turmush_ortogi_pasport", spouse.get("passport_photo_path")))
         items.append(("03_turmush_ortogi_foto", spouse.get("photo_path")))
     for i, ch in enumerate(data.get("children") or [], start=1):
-        items.append((f"04_farzand_{ch.get('child_index') or i}_foto", ch.get("photo_path")))
+        n = ch.get("child_index") or i
+        items.append((f"04_farzand_{n}_pasport", ch.get("passport_photo_path")))
+        items.append((f"04_farzand_{n}_foto", ch.get("photo_path")))
     return items
 
 
