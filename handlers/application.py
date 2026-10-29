@@ -137,7 +137,7 @@ async def ask_state(message: Message, state: FSMContext, st, header: str = "⬅�
         A.phone_number: ("Telefon raqamingizni kiriting (masalan: <code>+998901234567</code>):", n()),
         A.education_level: ("Ta'lim darajangizni tanlang:", get_education_kb()),
         A.marital_status: ("Oilaviy holatingizni tanlang:", get_marital_status_kb()),
-        A.children_count: ("21 yoshga to'lmagan, turmush qurmagan nechta farzandingiz bor?", get_children_count_kb()),
+        A.children_count: ("21 yoshga to'lmagan, turmush qurmagan nechta farzandingiz bor? (0 dan 10 gacha)", get_children_count_kb()),
         S.last_name: ("Turmush o'rtog'ingizning familiyasini kiriting:", n()),
         S.first_name: ("Turmush o'rtog'ingizning ismini kiriting:", n()),
         S.gender: ("Turmush o'rtog'ingizning jinsini tanlang:", get_gender_kb()),
@@ -146,6 +146,7 @@ async def ask_state(message: Message, state: FSMContext, st, header: str = "⬅�
         S.birth_region: ("Turmush o'rtog'ingiz tug'ilgan viloyatni tanlang:", get_region_kb()),
         S.birth_district: ("Turmush o'rtog'ingiz tug'ilgan tuman/shahrni kiriting yoki tanlang:", district_kb("spouse_birth_country", "spouse_birth_region")),
         S.education_level: ("Turmush o'rtog'ingizning ma'lumot darajasini tanlang:", get_education_kb()),
+        S.passport_photo: ("🛂 Turmush o'rtog'ingizning pasporti rasmini qayta yuboring:", n()),
         S.photo: ("📸 Turmush o'rtog'ingizning fotosuratini qayta yuboring:", n()),
         C.last_name: (f"👶 {child_no}-farzandning familiyasini kiriting:", n()),
         C.first_name: (f"{child_no}-farzandning ismini kiriting:", n()),
@@ -154,6 +155,7 @@ async def ask_state(message: Message, state: FSMContext, st, header: str = "⬅�
         C.birth_country: (f"{child_no}-farzand tug'ilgan davlatni tanlang:", get_country_kb()),
         C.birth_region: (f"{child_no}-farzand tug'ilgan viloyatni tanlang:", get_region_kb()),
         C.birth_district: (f"{child_no}-farzand tug'ilgan tuman/shahrni kiriting yoki tanlang:", district_kb("current_child_birth_country", "current_child_birth_region")),
+        C.passport_photo: (f"🛂 {child_no}-farzandning pasporti rasmini qayta yuboring:", n()),
         C.photo: (f"📸 {child_no}-farzandning fotosuratini qayta yuboring:", n()),
     }
 
@@ -1057,9 +1059,38 @@ async def process_spouse_birth_district(message: Message, state: FSMContext):
 async def process_spouse_education(message: Message, state: FSMContext):
     await state.update_data(spouse_education_level=message.text.strip())
 
-    text = "📸 <b>Turmush o'rtog'ingizning Green Card fotosuratini yuboring:</b>"
+    text = (
+        "🛂 <b>Turmush o'rtog'ingizning zagran pasporti rasmini yuboring:</b>\n"
+        "<i>(Rasm va ma'lumotlar sahifasi to'liq, aniq ko'rinsin. Ushbu qadam majburiy!)</i>"
+    )
+    await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+    await goto(state, SpouseStates.passport_photo)
+
+
+@router.message(SpouseStates.passport_photo, F.photo | F.document)
+async def process_spouse_passport_photo(message: Message, state: FSMContext, bot: Bot):
+    user_id = message.from_user.id
+    timestamp = int(datetime.now().timestamp())
+    file_id = message.photo[-1].file_id if message.photo else message.document.file_id
+
+    file_info = await bot.get_file(file_id)
+    file_bytes = (await bot.download_file(file_info.file_path)).read()
+
+    save_filename = f"{user_id}_{timestamp}_spouse_passport.jpg"
+    validate_and_save_photo(file_bytes, PHOTOS_DIR / save_filename)
+    await state.update_data(spouse_passport_photo_path=save_filename)
+
+    text = f"{PHOTO_RULES}\n\n📸 <b>Turmush o'rtog'ingizning Green Card fotosuratini yuboring:</b>"
     await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
     await goto(state, SpouseStates.photo)
+
+
+@router.message(SpouseStates.passport_photo)
+async def invalid_spouse_passport_photo(message: Message):
+    await message.answer(
+        "⚠️ <b>Iltimos, turmush o'rtog'ingizning pasporti rasmini rasm yoki fayl ko'rinishida yuboring.</b>",
+        reply_markup=get_nav_kb(), parse_mode="HTML"
+    )
 
 
 @router.message(SpouseStates.photo, F.photo | F.document)
@@ -1088,6 +1119,7 @@ async def process_spouse_photo(message: Message, state: FSMContext, bot: Bot):
         "birth_city": data.get("spouse_birth_city", ""),
         "birth_country": data.get("spouse_birth_country"),
         "education_level": data.get("spouse_education_level", ""),
+        "passport_photo_path": data.get("spouse_passport_photo_path"),
         "photo_path": save_filename
     }
     await state.update_data(spouse=spouse_data)
@@ -1108,15 +1140,10 @@ async def process_spouse_photo(message: Message, state: FSMContext, bot: Bot):
 
 @router.message(ApplicationStates.children_count, F.text)
 async def process_children_count(message: Message, state: FSMContext):
-    raw_text = message.text.strip()
-    if "0" in raw_text:
-        count = 0
-    elif raw_text.isdigit():
-        count = int(raw_text)
-    elif "6+" in raw_text:
-        count = 6
-    else:
-        await message.answer("Iltimos, pastdagi tugmalardan birini tanlang:")
+    m = re.match(r"\s*(\d+)", message.text or "")
+    count = int(m.group(1)) if m else -1
+    if not 0 <= count <= 10:
+        await message.answer("Iltimos, 0 dan 10 gacha bo'lgan sonni pastdagi tugmalardan tanlang:")
         return
 
     await state.update_data(children_count=count, total_children=count, current_child_index=1, children=[])
@@ -1216,9 +1243,43 @@ async def process_child_birth_district(message: Message, state: FSMContext):
     district = message.text.strip()
     await state.update_data(current_child_birth_district=district, current_child_birth_city=district)
 
-    text = "📸 <b>Farzandingizning Green Card fotosuratini yuboring:</b>"
+    d = await state.get_data()
+    n = d.get("current_child_index", 1)
+    text = (
+        f"🛂 <b>{n}-farzandning zagran pasporti rasmini yuboring:</b>\n"
+        "<i>(Rasm va ma'lumotlar sahifasi to'liq, aniq ko'rinsin. Ushbu qadam majburiy!)\n"
+        "Agar farzandingizda pasport bo'lmasa, tug'ilganlik haqidagi guvohnomasi rasmini yuboring.</i>"
+    )
+    await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
+    await goto(state, ChildStates.passport_photo)
+
+
+@router.message(ChildStates.passport_photo, F.photo | F.document)
+async def process_child_passport_photo(message: Message, state: FSMContext, bot: Bot):
+    user_id = message.from_user.id
+    timestamp = int(datetime.now().timestamp())
+    file_id = message.photo[-1].file_id if message.photo else message.document.file_id
+
+    file_info = await bot.get_file(file_id)
+    file_bytes = (await bot.download_file(file_info.file_path)).read()
+
+    data = await state.get_data()
+    n = data.get("current_child_index", 1)
+    save_filename = f"{user_id}_{timestamp}_child_{n}_passport.jpg"
+    validate_and_save_photo(file_bytes, PHOTOS_DIR / save_filename)
+    await state.update_data(current_child_passport_photo_path=save_filename)
+
+    text = f"{PHOTO_RULES}\n\n📸 <b>{n}-farzandning Green Card fotosuratini yuboring:</b>"
     await message.answer(text, reply_markup=get_nav_kb(), parse_mode="HTML")
     await goto(state, ChildStates.photo)
+
+
+@router.message(ChildStates.passport_photo)
+async def invalid_child_passport_photo(message: Message):
+    await message.answer(
+        "⚠️ <b>Iltimos, farzandingizning pasporti rasmini rasm yoki fayl ko'rinishida yuboring.</b>",
+        reply_markup=get_nav_kb(), parse_mode="HTML"
+    )
 
 
 @router.message(ChildStates.photo, F.photo | F.document)
@@ -1249,6 +1310,7 @@ async def process_child_photo(message: Message, state: FSMContext, bot: Bot):
         "birth_region": data.get("current_child_birth_region", ""),
         "birth_city": data.get("current_child_birth_city", ""),
         "birth_country": data.get("current_child_birth_country"),
+        "passport_photo_path": data.get("current_child_passport_photo_path"),
         "photo_path": save_filename
     }
 
@@ -1425,4 +1487,3 @@ async def finalize_application(bot: Bot, user_id: int, paid: bool = True) -> Opt
 async def process_restart(message: Message, state: FSMContext):
     await state.clear()
     await begin_questionnaire(message, state)
-    
