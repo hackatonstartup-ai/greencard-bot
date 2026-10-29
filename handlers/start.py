@@ -1,5 +1,5 @@
 from aiogram import Router, F
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from database import add_or_update_user
@@ -8,6 +8,37 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from keyboards import get_main_menu_kb, SUPPORT_BUTTON_TEXT
 
 router = Router()
+
+PREPARE_TEXT = (
+    "📋 <b>ANKETA TO'LDIRISHDAN OLDIN QUYIDAGILARNI TAYYOR QILING</b>\n\n"
+    "Anketa bir necha daqiqa oladi. To'xtab qolmaslik uchun oldindan quyidagilarni tayyorlab qo'ying:\n\n"
+    "🛂 <b>1. Zagran pasport</b> (o'zingiz uchun)\n"
+    "• Pasport raqami va amal qilish muddati\n"
+    "• Pasportning rasm va ma'lumotlar joylashgan sahifasi rasmi (aniq, blik tushmagan, to'liq)\n"
+    "• Ism va familiya pasportdagi kabi, lotin harflarida\n\n"
+    "📸 <b>2. O'zingizning rasmingiz</b>\n"
+    "• Oxirgi 6 oy ichida olingan, oppoq fonda, ko'zoynak va bosh kiyimsiz, filtrsiz\n"
+    "• Imkon bo'lsa \"Fayl\" (File) ko'rinishida yuboring\n\n"
+    "📝 <b>3. Shaxsiy ma'lumotlar</b>\n"
+    "• Tug'ilgan sana, davlat, viloyat va tuman/shahar\n"
+    "• Hozir yashayotgan davlat, viloyat, tuman va to'liq manzil (ko'cha, uy, xonadon)\n"
+    "• Telefon raqam (faol) va email manzil\n"
+    "• Ta'lim darajasi (tugatgan eng yuqori bosqich) va oilaviy holat\n\n"
+    "💍 <b>4. Agar turmush qurgan bo'lsangiz</b>\n"
+    "• Turmush o'rtog'ingizning ism-familiyasi, jinsi, tug'ilgan sanasi va joyi, ma'lumoti\n"
+    "• Uning ham alohida rasmi (xuddi shu talablarda)\n\n"
+    "👶 <b>5. Agar farzandlaringiz bo'lsa</b> (21 yoshga to'lmagan va turmush qurmagan)\n"
+    "• Har bir farzandning ism-familiyasi, jinsi, tug'ilgan sanasi va joyi\n"
+    "• Har bir farzandning alohida rasmi (xuddi shu talablarda)\n\n"
+    "👇 Pastdagi tugmalar orqali pasport va rasm namunalarini ko'rib oling, so'ng «📝 Anketa to'ldirish» tugmasini bosing."
+)
+
+
+def get_examples_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛂 Pasport rasmi namunasi", callback_data="example_passport")],
+        [InlineKeyboardButton(text="📸 O'z rasmim namunasi", callback_data="example_photo")],
+    ])
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -33,6 +64,7 @@ async def cmd_start(message: Message, state: FSMContext):
         "Kerakli bo'limni tanlang:"
     )
     await message.answer(welcome_text, reply_markup=get_main_menu_kb(user.id), parse_mode="HTML")
+    await message.answer(PREPARE_TEXT, reply_markup=get_examples_kb(), parse_mode="HTML")
 
 @router.message(F.text == "❌ Bekor qilish")
 @router.message(Command("cancel"))
@@ -55,6 +87,18 @@ from pathlib import Path
 from aiogram.types import FSInputFile
 
 PHOTO_GUIDE_PATH = Path(__file__).resolve().parent.parent / "assets" / "photo_guide.jpg"
+
+@router.callback_query(F.data == "example_photo")
+async def example_photo_cb(callback: CallbackQuery):
+    await callback.answer()
+    await show_photo_requirements(callback.message)
+
+
+@router.callback_query(F.data == "example_passport")
+async def example_passport_cb(callback: CallbackQuery):
+    await callback.answer()
+    await show_passport_requirements(callback.message)
+
 
 @router.message(F.text == "📷 To'g'ri rasm talablari")
 async def show_photo_requirements(message: Message):
