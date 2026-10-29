@@ -107,7 +107,7 @@ async def goto(state: FSMContext, new_state) -> None:
     await state.set_state(new_state)
 
 
-async def ask_state(message: Message, state: FSMContext, st) -> None:
+async def ask_state(message: Message, state: FSMContext, st, header: str = "⬅️ <b>Orqaga qaytdingiz.</b>") -> None:
     """Berilgan bosqich savolini qayta beradi (orqaga qaytganda ishlatiladi)."""
     d = await state.get_data()
     n = get_nav_kb
@@ -160,8 +160,11 @@ async def ask_state(message: Message, state: FSMContext, st) -> None:
     if st == ConfirmStates.confirm:
         await show_confirmation(message, state)
         return
+    if st not in prompts:
+        await begin_questionnaire(message, state)
+        return
     text, kb = prompts[st]
-    await message.answer(f"⬅️ <b>Orqaga qaytdingiz.</b>\n\n{text}", reply_markup=kb, parse_mode="HTML")
+    await message.answer(f"{header}\n\n{text}", reply_markup=kb, parse_mode="HTML")
 
 
 @router.message(F.text == BACK_TEXT, QUESTIONNAIRE_STATES)
@@ -218,9 +221,47 @@ def _pending_choice_kb():
     ])
 
 
+async def in_questionnaire(state: FSMContext) -> bool:
+    cur = await state.get_state()
+    return bool(cur) and cur in STATE_BY_NAME and cur != ApplicationStates.last_name.state
+
+
+def resume_kb():
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="▶️ Davom ettirish", callback_data="app_continue")],
+        [InlineKeyboardButton(text="🆕 Boshidan boshlash", callback_data="app_restart")],
+    ])
+
+
+RESUME_TEXT = (
+    "📋 <b>Sizda tugallanmagan anketa bor.</b>\n\n"
+    "Qoldirgan joyingizdan davom ettirasizmi yoki boshidan boshlaysizmi?"
+)
+
+
+@router.callback_query(F.data == "app_continue")
+async def app_continue_cb(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    cur = await state.get_state()
+    if cur in STATE_BY_NAME:
+        await ask_state(callback.message, state, STATE_BY_NAME[cur], header="▶️ <b>Davom etamiz.</b>")
+    else:
+        await begin_questionnaire(callback.message, state)
+
+
+@router.callback_query(F.data == "app_restart")
+async def app_restart_cb(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await begin_questionnaire(callback.message, state)
+
+
 @router.message(F.text == "📝 Anketa to'ldirish")
 async def start_application(message: Message, state: FSMContext):
     user_id = message.from_user.id
+    if await in_questionnaire(state):
+        await message.answer(RESUME_TEXT, reply_markup=resume_kb(), parse_mode="HTML")
+        return
     await state.clear()
 
     # Tasdiqlangan, lekin to'lanmagan anketa bormi?
