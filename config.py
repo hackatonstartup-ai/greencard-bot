@@ -18,6 +18,9 @@ DB_PATH = BASE_DIR / os.getenv("DB_PATH", "data/bot.db")
 PHOTOS_DIR = BASE_DIR / os.getenv("PHOTOS_DIR", "data/photos")
 EXPORTS_DIR = BASE_DIR / os.getenv("EXPORTS_DIR", "data/exports")
 
+# Serverdagi rasmlar necha kundan keyin o'chiriladi
+PHOTO_RETENTION_DAYS = int(os.getenv("PHOTO_RETENTION_DAYS", "7") or 7)
+
 PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
 EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
