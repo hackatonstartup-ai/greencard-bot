@@ -25,6 +25,7 @@ from database import (
     update_payment_status, has_approved_payment, consume_payment, get_payment,
     create_auto_payment, get_recent_pending_auto_payment,
     mark_payment_paid_if_pending, mark_payment_cancelled_if_pending,
+    supersede_pending_payments,
 )
 from utils import hamyon
 from utils.locations import REGIONS, PHOTO_RULES
@@ -235,9 +236,10 @@ def _fmt_card(card: str) -> str:
 
 def _auto_pay_kb(payment_id: int):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✅ To'lov qildim — tekshirish", callback_data=f"hp_check:{payment_id}")
-    ]])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ To'lov qildim — tekshirish", callback_data=f"hp_check:{payment_id}")],
+        [InlineKeyboardButton(text="📎 Chek yuborish (avtomatik tasdiqlanmasa)", callback_data=f"hp_receipt:{payment_id}")],
+    ])
 
 
 def _auto_pay_text(card: str, amount: int) -> str:
@@ -321,6 +323,7 @@ async def verify_and_settle(bot: Bot, storage, payment: dict) -> str:
                     pass
             return "wait"
         if await mark_payment_paid_if_pending(payment["id"]):
+            await supersede_pending_payments(payment["user_id"], payment["id"])
             await activate_questionnaire(bot, storage, payment["user_id"])
         return "paid"
     if status == "cancel":
@@ -386,20 +389,54 @@ async def check_auto_payment_cb(callback: CallbackQuery, bot: Bot, state: FSMCon
         await callback.answer()
 
 
+IMAGE_EXTS = {"jpg", "jpeg", "png", "webp"}
+MAX_RECEIPT_BYTES = 20 * 1024 * 1024  # Telegram bot yuklab olish limiti
+
+
+@router.callback_query(F.data.startswith("hp_receipt:"))
+async def ask_receipt_cb(callback: CallbackQuery, state: FSMContext):
+    """Avtomatik to'lov topilmasa, foydalanuvchi chekni qo'lda yuboradi (adminga boradi)."""
+    await state.set_state(PaymentStates.waiting_for_receipt)
+    await callback.message.answer(
+        "📎 <b>To'lov chekini yuboring.</b>\n\n"
+        "Rasm (JPG, PNG), PDF yoki boshqa fayl (hujjat) ko'rinishida yuborishingiz mumkin.\n"
+        "Admin chekni tekshirib, to'lovni tasdiqlaydi. Tasdiqlangach anketa avtomatik boshlanadi.",
+        reply_markup=get_cancel_kb(),
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+def _receipt_extension(message: Message) -> str:
+    if message.photo:
+        return "jpg"
+    doc = message.document
+    name = (doc.file_name or "") if doc else ""
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if not ext and doc and doc.mime_type:
+        ext = {"application/pdf": "pdf", "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}.get(doc.mime_type, "")
+    ext = re.sub(r"[^a-z0-9]", "", ext)[:6]
+    return ext or "bin"
+
+
 @router.message(PaymentStates.waiting_for_receipt, F.photo | F.document)
 async def process_payment_receipt(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
     timestamp = int(datetime.now().timestamp())
+
     file_id = message.photo[-1].file_id if message.photo else message.document.file_id
+    file_size = message.photo[-1].file_size if message.photo else message.document.file_size
+    if file_size and file_size > MAX_RECEIPT_BYTES:
+        await message.answer("⚠️ Fayl juda katta (20 MB dan oshmasin). Iltimos, kichikroq fayl yuboring.")
+        return
 
+    ext = _receipt_extension(message)
     file_info = await bot.get_file(file_id)
-    file_bytes_io = await bot.download_file(file_info.file_path)
-    file_bytes = file_bytes_io.read()
+    file_bytes = (await bot.download_file(file_info.file_path)).read()
 
-    save_filename = f"{user_id}_{timestamp}_receipt.jpg"
+    save_filename = f"{user_id}_{timestamp}_receipt.{ext}"
     save_path = PHOTOS_DIR / save_filename
-
-    validate_and_save_photo(file_bytes, save_path)
+    save_path.write_bytes(file_bytes)  # asl formatida saqlanadi (PDF ham bo'ladi)
 
     payment_id = await create_payment(user_id=user_id, receipt_photo=save_filename)
     await state.clear()
@@ -417,21 +454,34 @@ async def process_payment_receipt(message: Message, state: FSMContext, bot: Bot)
         f"👤 <b>Foydalanuvchi:</b> {message.from_user.full_name}\n"
         f"Username: @{message.from_user.username or 'yo_q'}\n"
         f"ID: <code>{user_id}</code>\n"
-        f"Summa: <b>50 000 so'm</b>\n\n"
+        f"Summa: <b>{PAYMENT_AMOUNT} so'm</b>\n\n"
         "To'lovni tasdiqlaysizmi?"
     )
 
     for admin_id in ADMIN_IDS:
         try:
-            await bot.send_photo(
-                chat_id=admin_id,
-                photo=FSInputFile(str(save_path)),
-                caption=admin_caption,
-                reply_markup=get_payment_admin_kb(payment_id, user_id),
-                parse_mode="HTML"
-            )
+            if ext in IMAGE_EXTS:
+                await bot.send_photo(
+                    chat_id=admin_id, photo=FSInputFile(str(save_path)),
+                    caption=admin_caption, reply_markup=get_payment_admin_kb(payment_id, user_id),
+                    parse_mode="HTML"
+                )
+            else:
+                await bot.send_document(
+                    chat_id=admin_id, document=FSInputFile(str(save_path)),
+                    caption=admin_caption, reply_markup=get_payment_admin_kb(payment_id, user_id),
+                    parse_mode="HTML"
+                )
         except Exception as e:
             print(f"Failed to send receipt to admin {admin_id}: {e}")
+
+
+@router.message(PaymentStates.waiting_for_receipt)
+async def receipt_wrong_type(message: Message):
+    await message.answer(
+        "⚠️ Iltimos, to'lov chekini <b>rasm, PDF yoki fayl</b> ko'rinishida yuboring.",
+        parse_mode="HTML"
+    )
 
 
 def _parse_payment_callback(data: str) -> tuple[int, Optional[int]]:
@@ -454,13 +504,22 @@ async def approve_payment_cb(callback: CallbackQuery, bot: Bot, state: FSMContex
     if user_id is None and callback.message:
         user_id = _user_id_from_caption(callback.message.caption)
 
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Ruxsat yo'q.", show_alert=True)
+        return
+
     payment = await resolve_payment(payment_id, user_id)
 
     if not payment:
         await callback.answer("To'lov topilmadi!", show_alert=True)
         return
 
+    if payment["status"] != "pending":
+        await callback.answer("Bu to'lov allaqachon ko'rib chiqilgan.", show_alert=True)
+        return
+
     await update_payment_status(payment["id"], "approved")
+    await supersede_pending_payments(payment["user_id"], payment["id"])
     target_user_id = payment["user_id"]
 
     if callback.message:
@@ -497,10 +556,18 @@ async def reject_payment_cb(callback: CallbackQuery, bot: Bot):
     if user_id is None and callback.message:
         user_id = _user_id_from_caption(callback.message.caption)
 
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Ruxsat yo'q.", show_alert=True)
+        return
+
     payment = await resolve_payment(payment_id, user_id)
 
     if not payment:
         await callback.answer("To'lov topilmadi!", show_alert=True)
+        return
+
+    if payment["status"] != "pending":
+        await callback.answer("Bu to'lov allaqachon ko'rib chiqilgan.", show_alert=True)
         return
 
     await update_payment_status(payment["id"], "rejected")
