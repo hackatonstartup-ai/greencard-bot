@@ -43,6 +43,7 @@ class SpouseStates(StatesGroup):
     birth_region = State()
     birth_district = State()
     education_level = State()
+    passport_photo = State()
     photo = State()
 
 class ChildStates(StatesGroup):
@@ -53,6 +54,7 @@ class ChildStates(StatesGroup):
     birth_country = State()
     birth_region = State()
     birth_district = State()
+    passport_photo = State()
     photo = State()
 
 class ConfirmStates(StatesGroup):
