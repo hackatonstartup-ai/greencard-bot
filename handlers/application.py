@@ -32,7 +32,7 @@ from utils import hamyon
 from utils.locations import REGIONS, PHOTO_RULES
 from utils.photo import validate_and_save_photo
 from config import PHOTOS_DIR, ADMIN_IDS, PAYMENT_AMOUNT, EXPORTS_DIR
-from utils.export import build_application_zip
+from utils.export import build_application_zip, delete_application_photos
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -1393,6 +1393,7 @@ async def finalize_application(bot: Bot, user_id: int, paid: bool = True) -> Opt
 
     # Adminga to'liq anketa ZIP (info.txt + PNG rasmlar) sifatida yuboriladi
     zip_path = None
+    zip_sent = False
     try:
         zip_path = await asyncio.to_thread(build_application_zip, app_id, data, tg, EXPORTS_DIR)
         for admin_id in ADMIN_IDS:
@@ -1402,6 +1403,7 @@ async def finalize_application(bot: Bot, user_id: int, paid: bool = True) -> Opt
                     document=FSInputFile(str(zip_path)),
                     caption=f"📦 #{app_id} anketa: {data.get('last_name')} {data.get('first_name')} (info.txt + rasmlar)",
                 )
+                zip_sent = True
             except Exception as e:
                 print(f"Failed to send zip to admin {admin_id}: {e}")
     except Exception as e:
@@ -1412,6 +1414,10 @@ async def finalize_application(bot: Bot, user_id: int, paid: bool = True) -> Opt
                 zip_path.unlink()
             except Exception:
                 pass
+    # Zip adminga yetib borgan bo'lsa, serverdagi rasmlar o'chiriladi (maxfiylik)
+    if zip_sent:
+        removed = await asyncio.to_thread(delete_application_photos, data)
+        logger.info("#%s anketa: %s ta rasm serverdan o'chirildi", app_id, removed)
     return app_id
 
 
@@ -1419,3 +1425,4 @@ async def finalize_application(bot: Bot, user_id: int, paid: bool = True) -> Opt
 async def process_restart(message: Message, state: FSMContext):
     await state.clear()
     await begin_questionnaire(message, state)
+    
