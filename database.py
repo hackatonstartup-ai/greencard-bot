@@ -425,3 +425,14 @@ async def get_stats() -> Dict[str, int]:
             "pending_apps": pending_apps,
             "total_users": total_users
         }
+
+
+async def supersede_pending_payments(user_id: int, keep_id: int) -> None:
+    """Bitta to'lov tasdiqlangach, shu foydalanuvchining boshqa kutilayotgan to'lovlarini yopadi
+    (chek ham, avtomatik ham to'lansa, ikki marta hisoblanmasligi uchun)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE payments SET status = 'superseded' WHERE user_id = ? AND status = 'pending' AND id != ?",
+            (user_id, keep_id),
+        )
+        await db.commit()
