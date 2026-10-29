@@ -26,6 +26,7 @@ from database import (
     create_auto_payment, get_recent_pending_auto_payment,
     mark_payment_paid_if_pending, mark_payment_cancelled_if_pending,
     supersede_pending_payments,
+    save_pending_application, get_pending_application, delete_pending_application,
 )
 from utils import hamyon
 from utils.locations import REGIONS, PHOTO_RULES
@@ -37,21 +38,21 @@ router = Router()
 logger = logging.getLogger(__name__)
 _poll_tasks: set = set()
 
-PAYMENT_INSTRUCTIONS = (
-    "Biz sizning anketangizni AQSh elchixonasi talablari asosida, "
-    "100% xatosiz va ishonchli to'ldirib beramiz. Unutmang, anketadagi kichik xato ham "
-    "yutuqni bekor qilishi mumkin, shuning uchun ishni ishonchli mutaxassisga topshiring.\n\n"
-    "Umumiy xizmat narxi — <b>50 000 so'm</b>. 💳\n\n"
-    "Ishni boshlashimiz uchun dastlab to'lovni amalga oshirishingizni so'raymiz:\n\n"
-    "💳 <b>Karta:</b>\n"
-    "<code>5614681013312222</code> AK\n"
-    "<code>9860350143406659</code> AK\n\n"
-    "🏦 <b>Bank:</b> Uzcard / Humo\n\n"
-    "✅ <b>To'lov chekini (skrinshot) shu yerga rasm ko'rinishida yuboring.</b> "
-    "To'lov tasdiqlanishi bilan darhol anketani to'ldirishni boshlaymiz.\n\n"
-    "Ish yakunida sizga yutug'ingizni tekshirish uchun rasmiy "
-    "<b>Tasdiqlash Raqami (Confirmation Number)</b> taqdim etiladi. Kutib qolaman! 🤝"
-)
+def payment_instructions() -> str:
+    """Avtomatik karta ishlamaganda ko'rsatiladigan qo'lda to'lov yo'riqnomasi."""
+    return (
+        "💳 <b>To'lov</b>\n\n"
+        f"Anketa xizmati narxi — <b>{PAYMENT_AMOUNT:,}</b> so'm.\n".replace(",", " ") +
+        "\nQuyidagi kartalardan biriga to'lovni amalga oshiring:\n\n"
+        "💳 <b>Karta:</b>\n"
+        "<code>5614681013312222</code> AK\n"
+        "<code>9860350143406659</code> AK\n\n"
+        "🏦 <b>Bank:</b> Uzcard / Humo\n\n"
+        "✅ <b>To'lov chekini (skrinshot) shu yerga rasm ko'rinishida yuboring.</b> "
+        "Admin tasdiqlashi bilan anketangiz rasman qabul qilinadi.\n\n"
+        "Ish yakunida sizga yutug'ingizni tekshirish uchun rasmiy "
+        "<b>Tasdiqlash Raqami (Confirmation Number)</b> taqdim etiladi. 🤝"
+    )
 
 
 def is_valid_date(date_str: str) -> bool:
@@ -199,30 +200,82 @@ async def restart_questionnaire(message: Message, state: FSMContext):
 
 
 # ==========================================
-# 1. TO'LOV JARAYONI (PAYMENT FIRST)
+# 1. ANKETA BOSHLASH (avval anketa, to'lov oxirida)
 # ==========================================
 
+def _retry_pay_kb():
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Qayta to'lash", callback_data="pay_retry")],
+    ])
+
+
+def _pending_choice_kb():
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 To'lovga o'tish", callback_data="pay_retry")],
+        [InlineKeyboardButton(text="🆕 Anketani yangidan boshlash", callback_data="pend_new")],
+    ])
+
+
 @router.message(F.text == "📝 Anketa to'ldirish")
-async def start_with_payment(message: Message, state: FSMContext):
+async def start_application(message: Message, state: FSMContext):
     user_id = message.from_user.id
-
-    already_paid = await has_approved_payment(user_id)
-    if already_paid:
-        await begin_questionnaire(message, state)
-        return
-
     await state.clear()
 
+    # Tasdiqlangan, lekin to'lanmagan anketa bormi?
+    if not await has_approved_payment(user_id) and await get_pending_application(user_id):
+        await message.answer(
+            "📋 Sizda tasdiqlangan, ammo <b>hali to'lanmagan</b> anketa bor.\n\n"
+            "To'lovga o'tasizmi yoki anketani yangidan boshlaysizmi?",
+            reply_markup=_pending_choice_kb(),
+            parse_mode="HTML"
+        )
+        return
+
+    await begin_questionnaire(message, state)
+
+
+async def begin_payment(message: Message, state: FSMContext, user_id: int) -> None:
+    """To'lov bosqichi: avval avtomatik karta, ishlamasa chek orqali qo'lda to'lov."""
     if hamyon.enabled():
-        if await start_auto_payment(message, state):
+        if await start_auto_payment(message, state, user_id):
             return
         await message.answer(
             "⚠️ Avtomatik to'lov vaqtincha ishlamayapti. Quyidagi usul bilan to'lang:",
             parse_mode="HTML"
         )
-
-    await message.answer(PAYMENT_INSTRUCTIONS, reply_markup=get_cancel_kb(), parse_mode="HTML")
+    await message.answer(payment_instructions(), reply_markup=get_cancel_kb(), parse_mode="HTML")
     await goto(state, PaymentStates.waiting_for_receipt)
+
+
+@router.callback_query(F.data == "pay_retry")
+async def retry_payment_cb(callback: CallbackQuery, bot: Bot, state: FSMContext):
+    user_id = callback.from_user.id
+    await callback.answer()
+
+    if await has_approved_payment(user_id):
+        await state.clear()
+        if not await finalize_application(bot, user_id, paid=True):
+            await activate_questionnaire(bot, state.storage, user_id)
+        return
+
+    if not await get_pending_application(user_id):
+        await callback.message.answer(
+            "Anketa topilmadi. Iltimos, «📝 Anketa to'ldirish» orqali qaytadan to'ldiring.",
+            reply_markup=get_main_menu_kb(user_id)
+        )
+        return
+
+    await state.clear()
+    await begin_payment(callback.message, state, user_id)
+
+
+@router.callback_query(F.data == "pend_new")
+async def new_after_pending_cb(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await delete_pending_application(callback.from_user.id)
+    await begin_questionnaire(callback.message, state)
 
 
 # ==========================================
@@ -249,13 +302,12 @@ def _auto_pay_text(card: str, amount: int) -> str:
         f"Karta raqami: <code>{card_digits}</code>\n"
         f"To'lov summasi: <code>{amount}</code> so'm\n\n"
         "⚠️ <b>Aynan shu summani</b> (tiyinsiz, ortiqcha-kamsiz) o'tkazing, aks holda to'lov avtomatik topilmaydi.\n"
-        "⏳ To'lov uchun <b>5 daqiqa</b> vaqt bor. To'lov tushishi bilan anketa avtomatik boshlanadi."
+        "⏳ To'lov uchun <b>5 daqiqa</b> vaqt bor. To'lov tushishi bilan anketangiz avtomatik qabul qilinadi."
     )
 
 
-async def start_auto_payment(message: Message, state: FSMContext) -> bool:
+async def start_auto_payment(message: Message, state: FSMContext, user_id: int) -> bool:
     """Avtomatik to'lov yaratadi. Muvaffaqiyatsiz bo'lsa False (chek usuliga o'tiladi)."""
-    user_id = message.from_user.id
     bot = message.bot
 
     existing = await get_recent_pending_auto_payment(user_id)
@@ -288,7 +340,8 @@ async def start_auto_payment(message: Message, state: FSMContext) -> bool:
 
 
 async def activate_questionnaire(bot: Bot, storage, user_id: int) -> None:
-    """To'lov tasdiqlangach foydalanuvchida anketani boshlaydi."""
+    """Zaxira holat: to'lov bor, lekin saqlangan anketa topilmadi (masalan, server yangilangan).
+    Foydalanuvchi anketani qayta to'ldiradi, oxirida qayta to'lov so'ralmaydi."""
     user_state = FSMContext(storage=storage, key=StorageKey(bot_id=bot.id, chat_id=user_id, user_id=user_id))
     await user_state.clear()
     await user_state.update_data(app_data={}, children=[], history=[])
@@ -296,13 +349,22 @@ async def activate_questionnaire(bot: Bot, storage, user_id: int) -> None:
     await bot.send_message(
         chat_id=user_id,
         text=(
-            "🎉 <b>To'lovingiz qabul qilindi!</b>\n\n"
-            "Endi Green Card anketangizni to'ldirishni boshlaymiz.\n\n"
+            "✅ <b>To'lovingiz qabul qilindi!</b>\n\n"
+            "Afsuski, avval kiritgan ma'lumotlaringiz serverda topilmadi. "
+            "Iltimos, anketani qaytadan to'ldiring — <b>qayta to'lov talab qilinmaydi</b>.\n\n"
             "1-qadam: <b>Familiyangizni</b> kiriting (Pasportingizdagi lotin harflarida, masalan: <code>ALIEV</code>):"
         ),
         reply_markup=get_nav_kb(),
         parse_mode="HTML"
     )
+
+
+async def finalize_after_payment(bot: Bot, storage, user_id: int) -> None:
+    """To'lov tasdiqlangach: saqlangan anketani rasman qabul qiladi va adminga yuboradi."""
+    user_state = FSMContext(storage=storage, key=StorageKey(bot_id=bot.id, chat_id=user_id, user_id=user_id))
+    await user_state.clear()
+    if not await finalize_application(bot, user_id, paid=True):
+        await activate_questionnaire(bot, storage, user_id)
 
 
 async def verify_and_settle(bot: Bot, storage, payment: dict) -> str:
@@ -324,14 +386,16 @@ async def verify_and_settle(bot: Bot, storage, payment: dict) -> str:
             return "wait"
         if await mark_payment_paid_if_pending(payment["id"]):
             await supersede_pending_payments(payment["user_id"], payment["id"])
-            await activate_questionnaire(bot, storage, payment["user_id"])
+            await finalize_after_payment(bot, storage, payment["user_id"])
         return "paid"
     if status == "cancel":
         if await mark_payment_cancelled_if_pending(payment["id"]):
             try:
                 await bot.send_message(
                     payment["user_id"],
-                    "⌛️ To'lov topilmadi yoki vaqti tugadi. Qaytadan urinib ko'rish uchun «📝 Anketa to'ldirish» ni bosing.",
+                    "⌛️ To'lov topilmadi yoki vaqti tugadi.\n"
+                    "Anketangiz saqlab qo'yilgan — qayta to'lash uchun pastdagi tugmani bosing.",
+                    reply_markup=_retry_pay_kb(),
                 )
             except Exception:
                 pass
@@ -400,7 +464,7 @@ async def ask_receipt_cb(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer(
         "📎 <b>To'lov chekini yuboring.</b>\n\n"
         "Rasm (JPG, PNG), PDF yoki boshqa fayl (hujjat) ko'rinishida yuborishingiz mumkin.\n"
-        "Admin chekni tekshirib, to'lovni tasdiqlaydi. Tasdiqlangach anketa avtomatik boshlanadi.",
+        "Admin chekni tekshirib, to'lovni tasdiqlaydi. Tasdiqlangach anketangiz rasman qabul qilinadi.",
         reply_markup=get_cancel_kb(),
         parse_mode="HTML"
     )
@@ -444,7 +508,7 @@ async def process_payment_receipt(message: Message, state: FSMContext, bot: Bot)
     await message.answer(
         "✅ <b>To'lov chekingiz adminga yuborildi!</b>\n\n"
         "Admin to'lovni tekshirib tasdiqlagach (odatda 5-10 daqiqa ichida), "
-        "anketa to'ldirish avtomatik boshlanadi. Iltimos, kuting... ⏳",
+        "anketangiz rasman qabul qilinadi. Iltimos, kuting... ⏳",
         reply_markup=get_main_menu_kb(user_id),
         parse_mode="HTML"
     )
@@ -531,23 +595,9 @@ async def approve_payment_cb(callback: CallbackQuery, bot: Bot, state: FSMContex
     await callback.answer("To'lov tasdiqlandi!")
 
     try:
-        user_msg = (
-            "🎉 <b>To'lovingiz muvaffaqiyatli tasdiqlandi!</b>\n\n"
-            "Endi Green Card anketangizni to'ldirishni boshlaymiz.\n\n"
-            "1-qadam: <b>Familiyangizni</b> kiriting (Pasportingizdagi lotin harflarida, masalan: <code>ALIEV</code>):"
-        )
-        # Foydalanuvchining FSM holatini o'rnatamiz, toki familiya kiritganda qabul qilsin!
-        user_state = FSMContext(
-            storage=state.storage,
-            key=StorageKey(bot_id=bot.id, chat_id=target_user_id, user_id=target_user_id)
-        )
-        await user_state.clear()
-        await user_state.update_data(app_data={}, children=[])
-        await user_state.set_state(ApplicationStates.last_name)
-
-        await bot.send_message(chat_id=target_user_id, text=user_msg, reply_markup=get_nav_kb(), parse_mode="HTML")
+        await finalize_after_payment(bot, state.storage, target_user_id)
     except Exception as e:
-        print(f"Error messaging user {target_user_id}: {e}")
+        logger.exception("Anketani yakunlashda xatolik (user %s): %s", target_user_id, e)
 
 
 @router.callback_query(F.data.startswith("pay_reject:"))
@@ -584,9 +634,9 @@ async def reject_payment_cb(callback: CallbackQuery, bot: Bot):
     try:
         reject_msg = (
             "⚠️ <b>To'lov chekingiz tasdiqlanmadi.</b>\n\n"
-            "Iltimos, haqiqiy to'lov chekini qayta yuboring yoki admin bilan bog'laning."
+            "Anketangiz saqlab qo'yilgan. Pastdagi tugma orqali qayta to'lang yoki admin bilan bog'laning."
         )
-        await bot.send_message(chat_id=target_user_id, text=reject_msg, reply_markup=get_main_menu_kb(target_user_id), parse_mode="HTML")
+        await bot.send_message(chat_id=target_user_id, text=reject_msg, reply_markup=_retry_pay_kb(), parse_mode="HTML")
     except Exception as e:
         print(f"Error messaging user {target_user_id}: {e}")
 
@@ -1221,28 +1271,67 @@ async def show_confirmation(message: Message, state: FSMContext):
             )
 
     summary += "\n⚠️ <b>Barcha ma'lumotlar to'g'ri kiritilganligiga ishonch hosil qiling!</b>"
+    summary += (
+        f"\n\n💳 Tasdiqlaganingizdan so'ng to'lov kartasi avtomatik beriladi "
+        f"(<b>{PAYMENT_AMOUNT:,}</b> so'm). To'lov tushgach anketangiz rasman qabul qilinadi.".replace(",", " ")
+    )
 
     await message.answer(summary, reply_markup=get_confirm_kb(), parse_mode="HTML")
     await goto(state, ConfirmStates.confirm)
 
 
-@router.message(ConfirmStates.confirm, F.text == "✅ Ma'lumotlarni tasdiqlash va yuborish")
+@router.message(ConfirmStates.confirm, F.text == "✅ Tasdiqlash va to'lovga o'tish")
 async def process_confirm(message: Message, state: FSMContext, bot: Bot):
+    """Anketa tasdiqlandi: ma'lumot saqlanadi, so'ng to'lov bosqichiga o'tiladi."""
     data = await state.get_data()
     user_id = message.from_user.id
-
-    app_id = await create_application(user_id=user_id, app_data=data)
-    await consume_payment(user_id)
+    data["_tg"] = {
+        "id": user_id,
+        "username": message.from_user.username,
+        "full_name": message.from_user.full_name,
+    }
+    await save_pending_application(user_id, data)
     await state.clear()
 
+    # Oldindan to'langan (ishlatilmagan) to'lov bo'lsa — to'g'ridan-to'g'ri yuboriladi
+    if await has_approved_payment(user_id):
+        await finalize_application(bot, user_id, paid=True)
+        return
+
+    await message.answer(
+        "✅ <b>Ma'lumotlaringiz tasdiqlandi va saqlandi.</b>\n\n"
+        "Endi anketani rasman topshirish uchun to'lovni amalga oshiring 👇",
+        reply_markup=get_cancel_kb(),
+        parse_mode="HTML"
+    )
+    await begin_payment(message, state, user_id)
+
+
+async def finalize_application(bot: Bot, user_id: int, paid: bool = True) -> Optional[int]:
+    """Saqlangan anketani bazaga rasman yozadi, mijozga va adminlarga xabar yuboradi.
+    Saqlangan anketa topilmasa None qaytaradi."""
+    data = await get_pending_application(user_id)
+    if not data:
+        return None
+    tg = data.pop("_tg", None) or {"id": user_id, "username": None, "full_name": ""}
+
+    app_id = await create_application(user_id=user_id, app_data=data)
+    await delete_pending_application(user_id)
+    await consume_payment(user_id)
+
     success_text = (
-        f"🎉 <b>Arizangiz muvaffaqiyatli qabul qilindi!</b>\n\n"
+        ("✅ <b>To'lovingiz qabul qilindi!</b>\n\n" if paid else "")
+        + f"🎉 <b>Arizangiz muvaffaqiyatli qabul qilindi!</b>\n\n"
         f"Sizning anketa raqamingiz: <b>#{app_id}</b>\n\n"
         "Mutaxassisimiz anketangizni rasmiy DV dasturi tizimiga kiritadi va "
         "natija (Confirmation Code) ushbu bot orqali sizga taqdim etiladi.\n\n"
         "Xizmatingizdan mamnunmiz! Omad tilaymiz! 🇺🇸"
     )
-    await message.answer(success_text, reply_markup=get_main_menu_kb(user_id), parse_mode="HTML")
+    try:
+        await bot.send_message(chat_id=user_id, text=success_text,
+                               reply_markup=get_main_menu_kb(user_id), parse_mode="HTML")
+    except Exception as e:
+        logger.warning("Mijozga xabar yuborib bo'lmadi (%s): %s", user_id, e)
 
     birth_place = f"{data.get('birth_region', '')} {data.get('birth_district', '')}".strip()
     passport_val = data.get('passport_number') or "Yo'q"
@@ -1257,7 +1346,7 @@ async def process_confirm(message: Message, state: FSMContext, bot: Bot):
         f"🎓 <b>Ta'lim:</b> {data.get('education_level')}\n"
         f"💍 <b>Oila:</b> {data.get('marital_status')}\n"
         f"👶 <b>Farzandlar:</b> {data.get('children_count', 0)} ta\n"
-        f"Telegram: @{message.from_user.username or 'yo_q'} (ID: {user_id})\n\n"
+        f"Telegram: @{tg.get('username') or 'yo_q'} (ID: {user_id})\n\n"
         "<i>Barcha anketalarni Excel formatda yuklab olish uchun /admin buyrug'idan foydalaning.</i>"
     )
 
@@ -1292,11 +1381,6 @@ async def process_confirm(message: Message, state: FSMContext, bot: Bot):
     # Adminga to'liq anketa ZIP (info.txt + PNG rasmlar) sifatida yuboriladi
     zip_path = None
     try:
-        tg = {
-            "id": user_id,
-            "username": message.from_user.username,
-            "full_name": message.from_user.full_name,
-        }
         zip_path = await asyncio.to_thread(build_application_zip, app_id, data, tg, EXPORTS_DIR)
         for admin_id in ADMIN_IDS:
             try:
@@ -1315,6 +1399,7 @@ async def process_confirm(message: Message, state: FSMContext, bot: Bot):
                 zip_path.unlink()
             except Exception:
                 pass
+    return app_id
 
 
 @router.message(ConfirmStates.confirm, F.text == "🔄 Qaytadan to'ldirish")
