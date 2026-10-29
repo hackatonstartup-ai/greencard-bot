@@ -1,3 +1,4 @@
+import json
 import aiosqlite
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -15,6 +16,15 @@ async def init_db():
             )
         """)
         
+        # To'lovdan oldin tasdiqlangan, lekin hali to'lanmagan anketalar
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS pending_applications (
+                user_id INTEGER PRIMARY KEY,
+                data TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS payments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -143,6 +153,38 @@ async def add_or_update_user(user_id: int, username: Optional[str], full_name: O
                 phone=COALESCE(excluded.phone, users.phone)
         """, (user_id, username, full_name, phone))
         await db.commit()
+
+async def save_pending_application(user_id: int, data: Dict[str, Any]) -> None:
+    """Tasdiqlangan, ammo to'lanmagan anketani saqlaydi (bitta foydalanuvchiga bitta)."""
+    payload = json.dumps(data, ensure_ascii=False, default=str)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO pending_applications (user_id, data, created_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET data=excluded.data, created_at=CURRENT_TIMESTAMP
+        """, (user_id, payload))
+        await db.commit()
+
+
+async def get_pending_application(user_id: int) -> Optional[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT data FROM pending_applications WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row[0])
+    except (TypeError, ValueError):
+        return None
+
+
+async def delete_pending_application(user_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM pending_applications WHERE user_id = ?", (user_id,))
+        await db.commit()
+
 
 async def create_payment(user_id: int, receipt_photo: str) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
