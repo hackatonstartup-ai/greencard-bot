@@ -9,7 +9,8 @@ from utils.storage import SQLiteStorage
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from config import BOT_TOKEN, ADMIN_IDS
+from config import BOT_TOKEN, ADMIN_IDS, PHOTO_RETENTION_DAYS
+from utils.export import cleanup_old_photos
 from database import init_db
 from handlers import start, application, admin
 from handlers.application import verify_and_settle
@@ -72,6 +73,18 @@ async def start_web_server(bot=None, storage=None):
     await site.start()
     logger.info(f"Health check web server muvaffaqiyatli ishga tushdi (port: {port})")
 
+async def photo_cleanup_loop():
+    """Har 24 soatda eski rasmlarni o'chiradi."""
+    while True:
+        try:
+            n = await asyncio.to_thread(cleanup_old_photos, PHOTO_RETENTION_DAYS)
+            if n:
+                logger.info("%s kundan eski %s ta rasm o'chirildi", PHOTO_RETENTION_DAYS, n)
+        except Exception as e:
+            logger.exception("Rasm tozalashda xato: %s", e)
+        await asyncio.sleep(24 * 3600)
+
+
 async def main():
     if not BOT_TOKEN:
         logger.error("DIQQAT: .env faylida BOT_TOKEN ko'rsatilmagan! Iltimos, .env faylga bot tokenini kiriting.")
@@ -94,6 +107,7 @@ async def main():
     dp.include_router(admin.router)
     dp.include_router(application.router)
 
+    cleanup_task = asyncio.create_task(photo_cleanup_loop())
     logger.info("Bot muvaffaqiyatli ishga tushdi!")
     if ADMIN_IDS:
         logger.info(f"Adminlar ID lari: {ADMIN_IDS}")
