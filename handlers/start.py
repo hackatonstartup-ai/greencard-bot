@@ -42,8 +42,13 @@ def get_examples_kb() -> InlineKeyboardMarkup:
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
-    await state.clear()
     user = message.from_user
+    if user.id not in ADMIN_IDS:
+        from handlers.application import in_questionnaire, resume_kb, RESUME_TEXT
+        if await in_questionnaire(state):
+            await message.answer(RESUME_TEXT, reply_markup=resume_kb(), parse_mode="HTML")
+            return
+    await state.clear()
     await add_or_update_user(
         user_id=user.id,
         username=user.username,
