@@ -102,7 +102,9 @@ def get_children_count_kb() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="0 (Farzand yo'q)")],
             [KeyboardButton(text="1"), KeyboardButton(text="2"), KeyboardButton(text="3")],
-            [KeyboardButton(text="4"), KeyboardButton(text="5"), KeyboardButton(text="6+")],
+            [KeyboardButton(text="4"), KeyboardButton(text="5"), KeyboardButton(text="6")],
+            [KeyboardButton(text="7"), KeyboardButton(text="8"), KeyboardButton(text="9")],
+            [KeyboardButton(text="10")],
             *_nav_rows(),
         ],
         resize_keyboard=True
