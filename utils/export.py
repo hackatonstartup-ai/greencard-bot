@@ -114,3 +114,34 @@ def build_application_zip(app_id: Any, data: Dict[str, Any], tg: Dict[str, Any],
         if zip_path.stat().st_size <= MAX_ZIP_BYTES:
             break
     return zip_path
+
+
+def delete_application_photos(data: Dict[str, Any]) -> int:
+    """Anketaga tegishli rasmlarni serverdan o'chiradi. O'chirilgan fayllar sonini qaytaradi."""
+    n = 0
+    for _, fn in _photo_list(data):
+        if not fn:
+            continue
+        f = PHOTOS_DIR / Path(fn).name
+        try:
+            if f.exists():
+                f.unlink()
+                n += 1
+        except Exception:
+            pass
+    return n
+
+
+def cleanup_old_photos(days: int) -> int:
+    """PHOTOS_DIR dagi `days` kundan eski fayllarni o'chiradi."""
+    import time
+    cutoff = time.time() - days * 86400
+    n = 0
+    for f in PHOTOS_DIR.iterdir():
+        try:
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                f.unlink()
+                n += 1
+        except Exception:
+            pass
+    return n
