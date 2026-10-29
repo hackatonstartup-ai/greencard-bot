@@ -112,7 +112,7 @@ def get_children_count_kb() -> ReplyKeyboardMarkup:
 def get_confirm_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="✅ Ma'lumotlarni tasdiqlash va yuborish")],
+            [KeyboardButton(text="✅ Tasdiqlash va to'lovga o'tish")],
             *_nav_rows(),
         ],
         resize_keyboard=True
