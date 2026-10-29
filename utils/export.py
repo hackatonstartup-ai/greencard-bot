@@ -48,6 +48,8 @@ def build_info_text(app_id: Any, data: Dict[str, Any], tg: Dict[str, Any]) -> st
     ]
     lines += _person_block("ASOSIY ARIZACHI", data)
     lines += [
+        f"Pasport raqami:       {_v(data.get('passport_number'))}",
+        f"Pasport muddati:      {_v(data.get('passport_expiry'))}",
         f"Yashash davlati:      {_v(data.get('live_country') or data.get('country'))}",
         f"Yashash viloyati:     {_v(live_region)}",
         f"Yashash tumani:       {_v(live_city)}",
