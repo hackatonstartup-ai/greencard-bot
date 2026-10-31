@@ -29,7 +29,25 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 HAMYON_SHOP_ID = os.getenv("HAMYON_SHOP_ID", "").strip()
 HAMYON_SHOP_KEY = os.getenv("HAMYON_SHOP_KEY", "").strip()
 HAMYON_BASE_URL = os.getenv("HAMYON_BASE_URL", "https://hamyon-api.uz").strip().rstrip("/")
-PAYMENT_AMOUNT = int(os.getenv("PAYMENT_AMOUNT", "50000") or 50000)
+PAYMENT_AMOUNT = int(os.getenv("PAYMENT_AMOUNT", "50000") or 50000)  # oddiy narx
+
+# --- Chegirma: PROMO_UNTIL sanasigacha (shu kun ham kiradi, Toshkent vaqti bilan) ---
+PROMO_AMOUNT = int(os.getenv("PROMO_AMOUNT", "25000") or 25000)
+PROMO_UNTIL = os.getenv("PROMO_UNTIL", "2026-11-15").strip()  # YYYY-MM-DD; bo'sh bo'lsa chegirma yo'q
+
+
+def get_payment_amount() -> int:
+    """Hozirgi narx: chegirma muddatida PROMO_AMOUNT, undan keyin PAYMENT_AMOUNT."""
+    from datetime import datetime, timedelta, timezone
+    if PROMO_UNTIL:
+        try:
+            end = datetime.strptime(PROMO_UNTIL, "%Y-%m-%d").date()
+            today = datetime.now(timezone(timedelta(hours=5))).date()
+            if today <= end:
+                return PROMO_AMOUNT
+        except ValueError:
+            pass
+    return PAYMENT_AMOUNT
 
 # --- Aloqa markazi (mijozlar uchun) ---
 SUPPORT_PHONE = os.getenv("SUPPORT_PHONE", "+998902301905").strip()          # masalan: +998901234567
