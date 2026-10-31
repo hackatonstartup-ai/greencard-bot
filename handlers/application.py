@@ -31,7 +31,7 @@ from database import (
 from utils import hamyon
 from utils.locations import REGIONS, PHOTO_RULES
 from utils.photo import validate_and_save_photo
-from config import PHOTOS_DIR, ADMIN_IDS, PAYMENT_AMOUNT, EXPORTS_DIR
+from config import PHOTOS_DIR, ADMIN_IDS, get_payment_amount, EXPORTS_DIR
 from utils.export import build_application_zip, delete_application_photos
 
 router = Router()
@@ -42,7 +42,7 @@ def payment_instructions() -> str:
     """Avtomatik karta ishlamaganda ko'rsatiladigan qo'lda to'lov yo'riqnomasi."""
     return (
         "💳 <b>To'lov</b>\n\n"
-        f"Anketa xizmati narxi — <b>{PAYMENT_AMOUNT:,}</b> so'm.\n".replace(",", " ") +
+        f"Anketa xizmati narxi — <b>{get_payment_amount():,}</b> so'm.\n".replace(",", " ") +
         "\nQuyidagi kartalardan biriga to'lovni amalga oshiring:\n\n"
         "💳 <b>Karta:</b>\n"
         "<code>5614681013312222</code> AK\n"
@@ -360,7 +360,7 @@ async def start_auto_payment(message: Message, state: FSMContext, user_id: int) 
         fresh = False
     else:
         try:
-            info = await hamyon.create_payment(PAYMENT_AMOUNT, order_id=f"u{user_id}_{int(datetime.now().timestamp())}")
+            info = await hamyon.create_payment(get_payment_amount(), order_id=f"u{user_id}_{int(datetime.now().timestamp())}")
         except Exception as e:
             logger.error("Hamyon create_payment xatosi: %s", e)
             return False
@@ -561,7 +561,7 @@ async def process_payment_receipt(message: Message, state: FSMContext, bot: Bot)
         f"👤 <b>Foydalanuvchi:</b> {message.from_user.full_name}\n"
         f"Username: @{message.from_user.username or 'yo_q'}\n"
         f"ID: <code>{user_id}</code>\n"
-        f"Summa: <b>{PAYMENT_AMOUNT} so'm</b>\n\n"
+        f"Summa: <b>{get_payment_amount()} so'm</b>\n\n"
         "To'lovni tasdiqlaysizmi?"
     )
 
@@ -1376,7 +1376,7 @@ async def show_confirmation(message: Message, state: FSMContext):
     summary += "\n⚠️ <b>Barcha ma'lumotlar to'g'ri kiritilganligiga ishonch hosil qiling!</b>"
     summary += (
         f"\n\n💳 Tasdiqlaganingizdan so'ng to'lov kartasi avtomatik beriladi "
-        f"(<b>{PAYMENT_AMOUNT:,}</b> so'm). To'lov tushgach anketangiz rasman qabul qilinadi.".replace(",", " ")
+        f"(<b>{get_payment_amount():,}</b> so'm). To'lov tushgach anketangiz rasman qabul qilinadi.".replace(",", " ")
     )
 
     await message.answer(summary, reply_markup=get_confirm_kb(), parse_mode="HTML")
